@@ -16,25 +16,29 @@ describe('normalizeGatewayModelId', () => {
 });
 
 describe('resolveUpstream', () => {
-  it('routes @cf to workers-ai when no gateway id', () => {
+  it('routes @cf to workers-ai by default (even with gateway id)', () => {
     assert.deepEqual(resolveUpstream('@cf/openai/gpt-oss-120b'), {
       provider: 'workers-ai',
       model: '@cf/openai/gpt-oss-120b',
     });
     assert.deepEqual(
-      resolveUpstream('@cf/openai/gpt-oss-120b', {}),
+      resolveUpstream('@cf/openai/gpt-oss-120b', { AI_GATEWAY_ID: 'modocus' }),
       { provider: 'workers-ai', model: '@cf/openai/gpt-oss-120b' },
     );
   });
 
-  it('routes @cf through ai-gateway when AI_GATEWAY_ID is set', () => {
+  it('routes @cf through ai-gateway only when ROUTE_CF_VIA_GATEWAY=true', () => {
     assert.deepEqual(
-      resolveUpstream('@cf/openai/gpt-oss-120b', { AI_GATEWAY_ID: 'modocus' }),
+      resolveUpstream('@cf/openai/gpt-oss-120b', {
+        AI_GATEWAY_ID: 'modocus',
+        ROUTE_CF_VIA_GATEWAY: 'true',
+      }),
       { provider: 'ai-gateway', model: '@cf/openai/gpt-oss-120b' },
     );
+    // Flag without gateway id → still direct
     assert.deepEqual(
-      resolveUpstream('@cf/openai/whisper', { AI_GATEWAY_ID: 'modocus' }),
-      { provider: 'ai-gateway', model: '@cf/openai/whisper' },
+      resolveUpstream('@cf/openai/whisper', { ROUTE_CF_VIA_GATEWAY: 'true' }),
+      { provider: 'workers-ai', model: '@cf/openai/whisper' },
     );
   });
 

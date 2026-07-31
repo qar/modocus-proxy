@@ -53,12 +53,12 @@ change them on the dashboard.
 
 | Model id pattern | Upstream | Bill |
 |------------------|----------|------|
-| `@cf/…` | AI Gateway when `AI_GATEWAY_ID` set (`env.AI.run` + `gateway.id`); else direct Workers AI | CF **Neurons** |
+| `@cf/…` | Direct Workers AI (`env.AI.run`); opt-in Gateway via `ROUTE_CF_VIA_GATEWAY=true` | CF **Neurons** |
 | `openai/…`, `anthropic/…`, `google/…`, bare `gpt-4o-mini` | AI Gateway (`env.AI.run` + `gateway.id`) | CF **Unified Billing** credits |
 | legacy HTTP | only if `ALLOW_LEGACY_HTTP_UPSTREAM=true` + provider keys | multi-bill |
 
-Requires var **`AI_GATEWAY_ID`** (default `modocus` in `wrangler.toml`) so **all** traffic
-(including `@cf/…`) appears in Gateway logs.  
+Requires var **`AI_GATEWAY_ID`** (default `modocus` in `wrangler.toml`) for third-party models.  
+`@cf` stays on direct Workers AI by default (avoids some accounts' Gateway payment errors on Neurons).  
 Create the gateway and load credits: CF Dashboard → **AI → AI Gateway**.
 
 Custom ids are allowed (safe charset). Dashboard dropdown lists common options

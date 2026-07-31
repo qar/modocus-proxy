@@ -421,10 +421,11 @@ function renderDashboard(data: Awaited<ReturnType<typeof buildStatsPayload>>): s
   <div class="panel" id="model-routing-panel">
     <h2>Model routing (live)</h2>
     <p class="sub">
-      Per-task model — with <span class="mono">AI_GATEWAY_ID</span>, both
-      <span class="mono">@cf/…</span> (Workers AI / Neurons) and
+      Per-task model —
+      <span class="mono">@cf/…</span> → Workers AI (Neurons, direct);
       <span class="mono">openai/…</span> · <span class="mono">anthropic/…</span> · <span class="mono">google/…</span>
-      (Unified Billing) go through AI Gateway so logs show in the CF dashboard.
+      → AI Gateway Unified Billing when <span class="mono">AI_GATEWAY_ID</span> is set.
+      Opt-in <span class="mono">ROUTE_CF_VIA_GATEWAY=true</span> to also log @cf via Gateway.
       Saved to KV (no redeploy). App sends <span class="mono">X-Modocus-Scene</span>.
     </p>
     <form id="model-routing-form" class="slot-grid">

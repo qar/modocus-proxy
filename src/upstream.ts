@@ -2,9 +2,10 @@
  * Upstream resolution and optional legacy HTTP providers.
  *
  * Primary paths (Cloudflare bill):
- *   - `@cf/…`     → AI Gateway when `AI_GATEWAY_ID` is set
- *                   (`env.AI.run(model, inputs, { gateway })` — Workers AI + Gateway logs/Neurons);
- *                   else direct Workers AI binding (no gateway hop).
+ *   - `@cf/…`     → direct Workers AI binding (Neurons) by default.
+ *                   Opt-in via `ROUTE_CF_VIA_GATEWAY=true` to hop AI Gateway
+ *                   (logs); some accounts hit Workers AI "2021: Payment error"
+ *                   when @cf is forced through Gateway — keep default direct.
  *   - third-party → AI Gateway via `env.AI.run(model, inputs, { gateway })`
  *                   (Unified Billing credits on the same CF account)
  *
@@ -25,6 +26,11 @@ export type UpstreamProvider
 export type UpstreamEnv = {
   /** AI Gateway id/name in the same CF account (e.g. "default" or "modocus"). */
   AI_GATEWAY_ID?: string;
+  /**
+   * When "true" and `AI_GATEWAY_ID` is set, also send `@cf/…` through AI Gateway
+   * for unified logs. Default off (direct Workers AI) — safer for Neurons billing.
+   */
+  ROUTE_CF_VIA_GATEWAY?: string;
   /**
    * When "true", allow direct OpenAI/OpenRouter HTTP if keys are present
    * (multi-bill fallback). Default off — third-party goes through AI Gateway.
@@ -73,11 +79,16 @@ export function normalizeGatewayModelId(modelId: string): string {
   return m;
 }
 
+function cfViaGateway(env?: UpstreamEnv): boolean {
+  return (env?.ROUTE_CF_VIA_GATEWAY ?? '').trim().toLowerCase() === 'true'
+    && Boolean(gatewayId(env ?? {}));
+}
+
 /**
  * Decide provider + upstream model id.
  *
  * Without env: pure routing rules (`@cf` → workers-ai; others → ai-gateway).
- * With env + `AI_GATEWAY_ID`: `@cf` also → ai-gateway (logs + same AI.run path).
+ * With env: `@cf` stays workers-ai unless `ROUTE_CF_VIA_GATEWAY=true` + gateway id.
  * With env: may fall back to legacy HTTP when explicitly allowed + keyed.
  */
 export function resolveUpstream(modelId: string, env?: UpstreamEnv): ResolvedUpstream {
@@ -92,9 +103,9 @@ export function resolveUpstream(modelId: string, env?: UpstreamEnv): ResolvedUps
   if (m.startsWith('http:openrouter/'))
     return { provider: 'openrouter', model: m.slice('http:openrouter/'.length) };
 
-  // Workers AI models: prefer Gateway hop when configured (dashboard logs).
+  // Workers AI models: direct Neurons by default (avoids Gateway payment quirks).
   if (m.startsWith('@cf/')) {
-    if (gatewayId(env ?? {}))
+    if (cfViaGateway(env))
       return { provider: 'ai-gateway', model: m };
     return { provider: 'workers-ai', model: m };
   }
@@ -121,8 +132,7 @@ export function resolveUpstream(modelId: string, env?: UpstreamEnv): ResolvedUps
   if (!gatewayModel.startsWith('@cf/'))
     return { provider: 'ai-gateway', model: gatewayModel };
 
-  // Normalized back to @cf (unusual) — same gateway-if-configured rule
-  if (gatewayId(env ?? {}))
+  if (cfViaGateway(env))
     return { provider: 'ai-gateway', model: gatewayModel };
   return { provider: 'workers-ai', model: gatewayModel };
 }
