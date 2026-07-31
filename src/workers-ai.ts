@@ -1,5 +1,5 @@
 /**
- * Chat / STT handlers — dispatch to Workers AI or OpenAI-compatible HTTP.
+ * Chat / STT handlers — Workers AI, AI Gateway (Unified Billing), or legacy HTTP.
  *
  * Privacy: never log bodies or transcripts.
  */
@@ -11,6 +11,7 @@ import {
   type ModelRoutingConfig,
 } from './models';
 import {
+  gatewayId,
   proxyOpenAiCompatibleChat,
   proxyOpenAiTranscription,
   resolveUpstream,
@@ -22,7 +23,15 @@ export type AiBinding = {
   run: (
     model: string,
     inputs: Record<string, unknown>,
-    options?: { returnRawResponse?: boolean },
+    options?: {
+      returnRawResponse?: boolean;
+      gateway?: {
+        id: string;
+        skipCache?: boolean;
+        cacheTtl?: number;
+        collectLog?: boolean;
+      };
+    },
   ) => Promise<unknown>;
 };
 
@@ -146,8 +155,56 @@ function wantsJson(body: Record<string, unknown>): boolean {
   return false;
 }
 
+function buildChatInputs(
+  body: Record<string, unknown>,
+  hasTools: boolean,
+): Record<string, unknown> {
+  const inputs: Record<string, unknown> = {
+    messages: body.messages,
+  };
+  if (typeof body.max_tokens === 'number')
+    inputs.max_tokens = body.max_tokens;
+  if (typeof body.temperature === 'number')
+    inputs.temperature = body.temperature;
+  if (body.response_format != null)
+    inputs.response_format = body.response_format;
+  if (hasTools) {
+    inputs.tools = body.tools;
+    if (body.tool_choice != null)
+      inputs.tool_choice = body.tool_choice;
+  }
+  return inputs;
+}
+
+async function runAiChat(
+  ai: AiBinding,
+  model: string,
+  inputs: Record<string, unknown>,
+  gw?: string | null,
+): Promise<Response> {
+  try {
+    const result = gw
+      ? await ai.run(model, inputs, { gateway: { id: gw } })
+      : await ai.run(model, inputs);
+    const text = extractText(result);
+    const toolCalls = extractToolCalls(result);
+    if (!text && !(toolCalls && toolCalls.length > 0))
+      return openaiChatCompletion(model, text || '', toolCalls);
+    return openaiChatCompletion(model, text, toolCalls);
+  }
+  catch (err) {
+    const msg = err instanceof Error ? err.message : 'ai_run_failed';
+    const status = /not found|unknown model|does not exist|invalid model/i.test(msg)
+      ? 400
+      : /credit|billing|payment|unauthorized|forbidden/i.test(msg)
+        ? 402
+        : 502;
+    return openaiError(status, msg, 'upstream');
+  }
+}
+
 /**
- * POST /v1/chat/completions → Workers AI | OpenAI | OpenRouter.
+ * POST /v1/chat/completions → Workers AI | AI Gateway | legacy HTTP.
  * Supports non-stream JSON; stream requests fall back to non-stream
  * (app client does not require SSE for core flows).
  */
@@ -167,6 +224,7 @@ export async function handleChatCompletions(
     return openaiError(400, 'invalid_json', 'bad_request');
   }
 
+  const env = upstreamEnv ?? {};
   const routing = config ?? await loadModelConfig(kv, environment);
   const scene = sceneFromRequest(req, body);
   // Do not forward operator/control fields to the model upstream.
@@ -183,46 +241,26 @@ export async function handleChatCompletions(
   if (!Array.isArray(messages) || messages.length === 0)
     return openaiError(400, 'messages required', 'bad_request');
 
-  const { provider, model: upstreamModel } = resolveUpstream(model);
+  const { provider, model: upstreamModel } = resolveUpstream(model, env);
+  const inputs = buildChatInputs(body, hasTools);
 
-  if (provider === 'openai' || provider === 'openrouter') {
-    return proxyOpenAiCompatibleChat(upstreamEnv ?? {}, provider, upstreamModel, body);
-  }
+  if (provider === 'openai' || provider === 'openrouter')
+    return proxyOpenAiCompatibleChat(env, provider, upstreamModel, body);
 
-  // Workers AI binding
-  const inputs: Record<string, unknown> = {
-    messages,
-  };
-  if (typeof body.max_tokens === 'number')
-    inputs.max_tokens = body.max_tokens;
-  if (typeof body.temperature === 'number')
-    inputs.temperature = body.temperature;
-  // JSON mode — best-effort; not all @cf models honor it.
-  if (body.response_format != null)
-    inputs.response_format = body.response_format;
-  // Tool calling — best-effort pass-through.
-  if (hasTools) {
-    inputs.tools = body.tools;
-    if (body.tool_choice != null)
-      inputs.tool_choice = body.tool_choice;
-  }
-
-  try {
-    const result = await ai.run(upstreamModel, inputs);
-    const text = extractText(result);
-    const toolCalls = extractToolCalls(result);
-    if (!text && !(toolCalls && toolCalls.length > 0)) {
-      // Some models return only { response: "" } on refusal — still 200.
-      return openaiChatCompletion(upstreamModel, text || '', toolCalls);
+  if (provider === 'ai-gateway') {
+    const gw = gatewayId(env);
+    if (!gw) {
+      return openaiError(
+        503,
+        'AI_GATEWAY_ID not configured — set wrangler var to your gateway name (e.g. default) and load Unified Billing credits',
+        'gateway_not_configured',
+      );
     }
-    return openaiChatCompletion(upstreamModel, text, toolCalls);
+    return runAiChat(ai, upstreamModel, inputs, gw);
   }
-  catch (err) {
-    const msg = err instanceof Error ? err.message : 'workers_ai_failed';
-    // Model not found / unsupported args often surface as 400-ish messages.
-    const status = /not found|unknown model|does not exist/i.test(msg) ? 400 : 502;
-    return openaiError(status, msg, 'upstream');
-  }
+
+  // Workers AI binding — direct Neurons path (no gateway hop) for lower latency.
+  return runAiChat(ai, upstreamModel, inputs, null);
 }
 
 function base64ToBytes(b64: string): Uint8Array {
@@ -296,19 +334,41 @@ export async function handleTranscriptions(
   if (!b64 || b64.length === 0)
     return openaiError(400, 'audio required', 'bad_request');
 
+  const env = upstreamEnv ?? {};
   const routing = config ?? await loadModelConfig(kv, environment);
   const model = resolveSttModel(modelReq, routing);
   const bytes = base64ToBytes(b64);
-  const { provider, model: upstreamModel } = resolveUpstream(model);
+  const { provider, model: upstreamModel } = resolveUpstream(model, env);
 
-  if (provider === 'openai') {
-    return proxyOpenAiTranscription(upstreamEnv ?? {}, upstreamModel, bytes, {
-      language,
-      filename: 'audio.m4a',
-    });
+  // Third-party STT: prefer legacy OpenAI multipart when key present; Gateway STT
+  // via AI.run is model-dependent — keep @cf whisper as the default path.
+  if (provider === 'openai' || (provider === 'ai-gateway' && upstreamModel.includes('whisper'))) {
+    if (env.OPENAI_API_KEY?.trim()) {
+      const openaiModel = upstreamModel.startsWith('openai/')
+        ? upstreamModel.slice('openai/'.length)
+        : upstreamModel;
+      return proxyOpenAiTranscription(env, openaiModel, bytes, {
+        language,
+        filename: 'audio.m4a',
+      });
+    }
+    if (provider === 'ai-gateway') {
+      return openaiError(
+        503,
+        'third-party STT requires OPENAI_API_KEY (legacy) or use @cf whisper models',
+        'upstream_not_configured',
+      );
+    }
   }
   if (provider === 'openrouter') {
     return openaiError(400, 'stt_openrouter_unsupported', 'bad_request');
+  }
+  if (provider === 'ai-gateway') {
+    return openaiError(
+      400,
+      'stt_use_workers_ai_whisper',
+      'bad_request',
+    );
   }
 
   // Workers AI Whisper expects `audio` as number[] (byte values) for classic

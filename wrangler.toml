@@ -13,6 +13,9 @@ ENVIRONMENT = "production"
 ALLOWED_BUNDLE_IDS = "app.modocus,app.modocus.preview,app.modocus.development"
 ALLOWED_PRODUCT_IDS = "app.modocus.ai.monthly,app.modocus.ai.yearly"
 ALLOW_SANDBOX = "true"
+# AI Gateway name in this account (Dashboard → AI → AI Gateway).
+# Third-party models (openai/…, anthropic/…) bill via Unified Billing credits.
+AI_GATEWAY_ID = "modocus"
 
 [[kv_namespaces]]
 binding = "USAGE"
@@ -25,9 +28,9 @@ zone_name = "modocus.app"
 # Secrets:
 #   DASHBOARD_TOKEN     — operator dashboard (≥16 chars) on prod + staging
 #   DEV_BYPASS_TOKEN    — staging only
-#   OPENAI_API_KEY      — optional; enables gpt-4o-mini / gpt-4o / whisper-1 routing
-#   OPENROUTER_API_KEY  — optional; enables anthropic/… google/… etc.
-# Optional vars: OPENAI_BASE_URL, OPENROUTER_BASE_URL
+#   OPENAI_API_KEY / OPENROUTER_API_KEY — only if ALLOW_LEGACY_HTTP_UPSTREAM=true
+# Vars:
+#   AI_GATEWAY_ID — gateway name for third-party models (Unified Billing)
 
 # ── staging ────────────────────────────────────────────────────────────────
 [env.staging]
@@ -44,6 +47,7 @@ ENVIRONMENT = "staging"
 ALLOWED_BUNDLE_IDS = "app.modocus,app.modocus.preview,app.modocus.development"
 ALLOWED_PRODUCT_IDS = "app.modocus.ai.monthly,app.modocus.ai.yearly"
 ALLOW_SANDBOX = "true"
+AI_GATEWAY_ID = "modocus"
 
 [[env.staging.kv_namespaces]]
 binding = "USAGE"

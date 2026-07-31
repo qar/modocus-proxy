@@ -19,6 +19,8 @@ App 侧怎么连本服务：见 app 仓 `ios-sensors/docs/features/ai-proxy-env.
 | 给谁用 | 本机 / USB preview / TestFlight dogfood | App Store 正式包 |
 | 模型路由 KV 键 | `cfg:model_slots:staging` | `cfg:model_slots:production` |
 | Dashboard | `https://ai-staging.modocus.app/dashboard` | `https://ai.modocus.app/dashboard` |
+| 上游 | `@cf/…` → Workers AI；`openai/…` `anthropic/…` → **AI Gateway** | 同左 |
+| Gateway | var `AI_GATEWAY_ID`（默认 `modocus`） | 同左 |
 
 > 两环境可共用同一 Cloudflare KV namespace，但 **模型路由按环境写不同 key**，互不覆盖。  
 > Usage 计数若共用 KV，dashboard 上的「今日请求」可能混看——以 `ENVIRONMENT` 与事件里的 auth 区分；需要严格隔离时可再拆 KV。
@@ -124,41 +126,49 @@ curl -sS -X PUT -H "Authorization: Bearer $DASHBOARD_TOKEN" \
 
 - **无需 redeploy**；isolate 约 15s 内读到新 KV。  
 - **staging / production 分开保存**，改 staging 不会动生产。  
-- 选 OpenAI 模型前确认该环境已配置 `OPENAI_API_KEY`（`/health` 里 `upstream.openai: true`）。
+- 选 `openai/…` / Claude / Gemini 前确认 `AI_GATEWAY_ID` 已设且 CF 账户有 Gateway credits（`/health` → `aiGateway: true`）。
 
 ---
 
-## 4. Secrets 管理
+## 4. Secrets / Gateway / 账单
 
-在**对应环境**各写一次（不会进 git）：
+### 4.1 AI Gateway（第三方模型，统一 CF 账单）
+
+第三方模型（`openai/gpt-4o-mini`、`anthropic/…`、`google/…`）走 **AI Gateway Unified Billing**，**不需要**各家 API key。
+
+1. Cloudflare Dashboard → **AI → AI Gateway** → 创建 gateway，名称与 `AI_GATEWAY_ID` 一致（默认 **`modocus`**，见 `wrangler.toml`）。  
+2. 同一页 **Unified Billing / Credits** → 充值 credits（有 credits 手续费；模型价按厂商 list price）。  
+3. Worker 已带 `[ai] binding = "AI"`；部署后 `/health` 应含 `"aiGateway": true`。
+
+```bash
+# 改 gateway 名（可选）— 写在 wrangler.toml [vars] / [env.staging.vars]
+# AI_GATEWAY_ID = "modocus"
+```
+
+| 模型 id | 上游 | 账单 |
+|---------|------|------|
+| `@cf/…` | Workers AI 直连 | CF **Neurons** |
+| `openai/…` `anthropic/…` `google/…` | `env.AI.run(…, { gateway })` | CF **Unified Billing credits** |
+
+### 4.2 Secrets
 
 ```bash
 # Dashboard（两环境都要）
 printf '%s' "$(openssl rand -hex 24)" | npx wrangler secret put DASHBOARD_TOKEN
 printf '%s' "$DASHBOARD_TOKEN" | npx wrangler secret put DASHBOARD_TOKEN --env staging
 
-# Staging dogfood（仅 staging；production 即使误设也会被代码忽略）
+# Staging dogfood（仅 staging）
 printf '%s' "$DEV_BYPASS_TOKEN" | npx wrangler secret put DEV_BYPASS_TOKEN --env staging
-
-# 第三方上游（按需，两环境分别设）
-printf '%s' "$OPENAI_API_KEY" | npx wrangler secret put OPENAI_API_KEY
-printf '%s' "$OPENAI_API_KEY" | npx wrangler secret put OPENAI_API_KEY --env staging
-
-printf '%s' "$OPENROUTER_API_KEY" | npx wrangler secret put OPENROUTER_API_KEY
-printf '%s' "$OPENROUTER_API_KEY" | npx wrangler secret put OPENROUTER_API_KEY --env staging
 ```
 
-可选 vars（写在 `wrangler.toml` 或 dashboard，非 secret）：
+**一般不需要** `OPENAI_API_KEY` / `OPENROUTER_API_KEY`。  
+仅当 `ALLOW_LEGACY_HTTP_UPSTREAM=true` 时才启用直连 HTTP（多账单逃生口）。
 
-- `OPENAI_BASE_URL`（默认 `https://api.openai.com/v1`）
-- `OPENROUTER_BASE_URL`（默认 `https://openrouter.ai/api/v1`）
-- `DAILY_LIMIT`（默认 80，按 subject / 日）
-
-查看是否生效：
+可选：`DAILY_LIMIT`（默认 80）。
 
 ```bash
-curl -sS https://ai-staging.modocus.app/health
-# upstream.openai / openrouter / workersAi
+curl -sS https://ai-staging.modocus.app/health | jq .upstream
+# { "workersAi": true, "aiGateway": true, "gatewayId": "modocus", ... }
 ```
 
 ---

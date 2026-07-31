@@ -9,7 +9,8 @@
  *   GET  /dashboard/api      (JSON stats)
  *
  * Auth (API): production = Apple JWS; staging = JWS | DEV_BYPASS.
- * Upstream: Workers AI (env.AI) and/or OpenAI / OpenRouter HTTP (secrets).
+ * Upstream: Workers AI (`@cf/…`, Neurons) and AI Gateway third-party models
+ * (Unified Billing on the same Cloudflare account). Optional legacy HTTP keys.
  *
  * Privacy: never log request/response bodies or raw tokens.
  */
@@ -35,11 +36,16 @@ export interface Env {
   DEV_BYPASS_TOKEN?: string;
   /** Operator dashboard shared secret (≥16 chars). */
   DASHBOARD_TOKEN?: string;
-  /** OpenAI API key — enables gpt-4o-mini / gpt-4o / whisper-1 etc. */
+  /**
+   * AI Gateway name/id in this CF account (e.g. "default").
+   * Required for non-@cf models (openai/…, anthropic/…, google/…).
+   */
+  AI_GATEWAY_ID?: string;
+  /** Set "true" to allow direct OpenAI/OpenRouter HTTP (multi-bill fallback). */
+  ALLOW_LEGACY_HTTP_UPSTREAM?: string;
+  /** Legacy only — used when ALLOW_LEGACY_HTTP_UPSTREAM=true. */
   OPENAI_API_KEY?: string;
-  /** Optional OpenAI-compatible base (default https://api.openai.com/v1). */
   OPENAI_BASE_URL?: string;
-  /** OpenRouter API key — enables anthropic/…, google/…, etc. */
   OPENROUTER_API_KEY?: string;
   OPENROUTER_BASE_URL?: string;
   USAGE?: KVNamespace;
@@ -144,11 +150,7 @@ export default {
       return json({
         ok: true,
         env: (env.ENVIRONMENT ?? 'production').toLowerCase(),
-        upstream: {
-          workersAi: caps.workersAi,
-          openai: caps.openai,
-          openrouter: caps.openrouter,
-        },
+        upstream: caps,
         dashboard: Boolean(env.DASHBOARD_TOKEN && env.DASHBOARD_TOKEN.length >= 16),
       });
     }

@@ -8,8 +8,8 @@ Expo/React Native project.
 
 **Repo:** https://github.com/qar/modocus-proxy  
 
-**Upstreams:** Cloudflare Workers AI (`env.AI`), optional OpenAI / OpenRouter
-HTTP (secrets).
+**Upstreams:** Workers AI (`@cf/…`, Neurons) + **AI Gateway** third-party
+models (Unified Billing on the same Cloudflare account).
 
 ---
 
@@ -51,24 +51,17 @@ change them on the dashboard.
 
 ### Upstreams
 
-| Model id pattern | Upstream | Secret |
-|------------------|----------|--------|
-| `@cf/…` | Workers AI binding | (none) |
-| `gpt-4o-mini`, `gpt-4o`, `openai/gpt-4o-mini`, `chatgpt-4o-mini`… | OpenAI | `OPENAI_API_KEY` |
-| `anthropic/…`, `google/…`, other `org/model` | OpenRouter | `OPENROUTER_API_KEY` |
+| Model id pattern | Upstream | Bill |
+|------------------|----------|------|
+| `@cf/…` | Workers AI (`env.AI.run`) | CF **Neurons** |
+| `openai/…`, `anthropic/…`, `google/…`, bare `gpt-4o-mini` | AI Gateway (`env.AI.run` + `gateway.id`) | CF **Unified Billing** credits |
+| legacy HTTP | only if `ALLOW_LEGACY_HTTP_UPSTREAM=true` + provider keys | multi-bill |
+
+Requires var **`AI_GATEWAY_ID`** (default `modocus` in `wrangler.toml`).  
+Create the gateway and load credits: CF Dashboard → **AI → AI Gateway**.
 
 Custom ids are allowed (safe charset). Dashboard dropdown lists common options
 plus **Custom model id…**.
-
-```bash
-# enable OpenAI (prod + staging)
-printf '%s' "$OPENAI_API_KEY" | npx wrangler secret put OPENAI_API_KEY
-printf '%s' "$OPENAI_API_KEY" | npx wrangler secret put OPENAI_API_KEY --env staging
-
-# optional OpenRouter
-printf '%s' "$OPENROUTER_API_KEY" | npx wrangler secret put OPENROUTER_API_KEY
-printf '%s' "$OPENROUTER_API_KEY" | npx wrangler secret put OPENROUTER_API_KEY --env staging
-```
 
 ### Slots
 
@@ -100,12 +93,13 @@ Product notes (app repo):
 
 ## Secrets (checklist)
 
-| Secret | staging | production |
-|--------|---------|------------|
+| Item | staging | production |
+|------|---------|------------|
 | `DASHBOARD_TOKEN` | ✅ | ✅ |
 | `DEV_BYPASS_TOKEN` | ✅ dogfood | ❌ ignored even if set |
-| `OPENAI_API_KEY` | optional | optional |
-| `OPENROUTER_API_KEY` | optional | optional |
+| `AI_GATEWAY_ID` var | ✅ (`modocus`) | ✅ |
+| Gateway Unified Billing credits | if using third-party models | same |
+| `OPENAI_API_KEY` / OpenRouter | only legacy HTTP mode | only legacy |
 
 ```bash
 printf '%s' "$(openssl rand -hex 24)" | npx wrangler secret put DASHBOARD_TOKEN
@@ -141,7 +135,7 @@ curl -sS -X POST https://ai-staging.modocus.app/v1/chat/completions \
 - Token → httpOnly cookie；或 `Authorization: Bearer` on `/dashboard/api`
 - Model routing: `GET|PUT /dashboard/api/models`
 - Does **not** log request bodies
-- Real $ → Cloudflare Billing → Workers AI / your OpenAI·OpenRouter bills
+- Real $ → Cloudflare Billing → Workers AI (Neurons) + AI Gateway credits
 
 ---
 

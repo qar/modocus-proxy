@@ -1,17 +1,36 @@
 /**
- * Resolve which upstream serves a model id, and call OpenAI-compatible HTTP APIs.
+ * Upstream resolution and optional legacy HTTP providers.
+ *
+ * Primary paths (Cloudflare bill):
+ *   - `@cf/…`     → Workers AI binding (Neurons)
+ *   - third-party → AI Gateway via `env.AI.run(model, inputs, { gateway })`
+ *                   (Unified Billing credits on the same CF account)
+ *
+ * Legacy optional (separate bills — only if keys set AND gateway unavailable
+ * for that call, or model prefix forces http):
+ *   - `http:openai/…` / bare with ALLOW_LEGACY_HTTP_UPSTREAM
+ *   - `openrouter/…` with OPENROUTER_API_KEY
  *
  * Privacy: never log request/response bodies or API keys.
  */
 
-export type UpstreamProvider = 'workers-ai' | 'openai' | 'openrouter';
+export type UpstreamProvider
+  = | 'workers-ai'
+    | 'ai-gateway'
+    | 'openai'
+    | 'openrouter';
 
 export type UpstreamEnv = {
+  /** AI Gateway id/name in the same CF account (e.g. "default" or "modocus"). */
+  AI_GATEWAY_ID?: string;
+  /**
+   * When "true", allow direct OpenAI/OpenRouter HTTP if keys are present
+   * (multi-bill fallback). Default off — third-party goes through AI Gateway.
+   */
+  ALLOW_LEGACY_HTTP_UPSTREAM?: string;
   OPENAI_API_KEY?: string;
-  /** Override OpenAI base (default https://api.openai.com/v1). No trailing slash. */
   OPENAI_BASE_URL?: string;
   OPENROUTER_API_KEY?: string;
-  /** Override OpenRouter base (default https://openrouter.ai/api/v1). */
   OPENROUTER_BASE_URL?: string;
 };
 
@@ -23,45 +42,84 @@ export type ResolvedUpstream = {
 
 /** Friendly aliases operators might type. */
 const MODEL_ALIASES: Record<string, string> = {
-  'chatgpt-4o-mini': 'gpt-4o-mini',
-  'chatgpt-4o': 'gpt-4o',
-  'openai/chatgpt-4o-mini': 'gpt-4o-mini',
-  'openai/chatgpt-4o': 'gpt-4o',
+  'chatgpt-4o-mini': 'openai/gpt-4o-mini',
+  'chatgpt-4o': 'openai/gpt-4o',
+  'openai/chatgpt-4o-mini': 'openai/gpt-4o-mini',
+  'openai/chatgpt-4o': 'openai/gpt-4o',
 };
 
+function legacyHttpAllowed(env?: UpstreamEnv): boolean {
+  return (env?.ALLOW_LEGACY_HTTP_UPSTREAM ?? '').trim().toLowerCase() === 'true';
+}
+
 /**
- * Decide provider + upstream model id from an operator/client model string.
- *
- * - `@cf/...` → Workers AI binding
- * - `openai/gpt-4o-mini` or bare `gpt-4o-mini` → OpenAI
- * - `openrouter/…` or other `provider/model` → OpenRouter
+ * Normalize bare OpenAI-family ids to `openai/…` (AI Gateway catalog form).
  */
-export function resolveUpstream(modelId: string): ResolvedUpstream {
+export function normalizeGatewayModelId(modelId: string): string {
   let m = modelId.trim();
   const aliased = MODEL_ALIASES[m] ?? MODEL_ALIASES[m.toLowerCase()];
   if (aliased)
     m = aliased;
 
+  if (m.startsWith('@cf/') || m.includes('/'))
+    return m;
+
+  // Bare OpenAI-family → openai/<id>
+  if (/^(gpt-|o[0-9]|chatgpt-|text-embedding|whisper|tts-)/i.test(m))
+    return `openai/${m}`;
+
+  return m;
+}
+
+/**
+ * Decide provider + upstream model id.
+ *
+ * Without env: pure routing rules (gateway preferred for non-@cf).
+ * With env: may fall back to legacy HTTP when explicitly allowed + keyed.
+ */
+export function resolveUpstream(modelId: string, env?: UpstreamEnv): ResolvedUpstream {
+  let m = modelId.trim();
+  const aliased = MODEL_ALIASES[m] ?? MODEL_ALIASES[m.toLowerCase()];
+  if (aliased)
+    m = aliased;
+
+  // Explicit force legacy HTTP prefixes (ops escape hatch)
+  if (m.startsWith('http:openai/'))
+    return { provider: 'openai', model: m.slice('http:openai/'.length) };
+  if (m.startsWith('http:openrouter/'))
+    return { provider: 'openrouter', model: m.slice('http:openrouter/'.length) };
+
   if (m.startsWith('@cf/'))
     return { provider: 'workers-ai', model: m };
 
-  if (m.startsWith('openrouter/'))
-    return { provider: 'openrouter', model: m.slice('openrouter/'.length) };
+  // openrouter/… → legacy OpenRouter only when allowed + key; else strip prefix → gateway
+  if (m.startsWith('openrouter/')) {
+    const rest = m.slice('openrouter/'.length);
+    if (legacyHttpAllowed(env) && env?.OPENROUTER_API_KEY?.trim())
+      return { provider: 'openrouter', model: rest };
+    return { provider: 'ai-gateway', model: rest.includes('/') ? rest : `openrouter/${rest}` };
+  }
 
-  // openai/gpt-4o-mini → OpenAI API model gpt-4o-mini
-  if (m.startsWith('openai/'))
-    return { provider: 'openai', model: m.slice('openai/'.length) };
+  const gatewayModel = normalizeGatewayModelId(m);
 
-  // Bare OpenAI-family ids
-  if (/^(gpt-|o[0-9]|chatgpt-|text-embedding|whisper|tts-)/i.test(m))
-    return { provider: 'openai', model: m };
+  // Legacy direct OpenAI when allowed and no gateway id configured
+  if (legacyHttpAllowed(env) && !env?.AI_GATEWAY_ID?.trim()) {
+    if (gatewayModel.startsWith('openai/'))
+      return { provider: 'openai', model: gatewayModel.slice('openai/'.length) };
+    if (env?.OPENROUTER_API_KEY?.trim() && gatewayModel.includes('/'))
+      return { provider: 'openrouter', model: gatewayModel };
+  }
 
-  // org/model (anthropic/…, google/…, meta-llama/…) → OpenRouter
-  if (m.includes('/') && !m.startsWith('@'))
-    return { provider: 'openrouter', model: m };
+  // Default: third-party / provider models → AI Gateway (Unified Billing)
+  if (!gatewayModel.startsWith('@cf/'))
+    return { provider: 'ai-gateway', model: gatewayModel };
 
-  // Unknown bare id: try OpenAI (operator can use custom base URL)
-  return { provider: 'openai', model: m };
+  return { provider: 'workers-ai', model: gatewayModel };
+}
+
+export function gatewayId(env: UpstreamEnv): string | null {
+  const id = env.AI_GATEWAY_ID?.trim();
+  return id && id.length > 0 ? id : null;
 }
 
 function openaiError(status: number, message: string, code = 'upstream'): Response {
@@ -104,8 +162,7 @@ function authHeaders(env: UpstreamEnv, provider: 'openai' | 'openrouter'): Heade
 }
 
 /**
- * Forward chat completion to OpenAI or OpenRouter. Response is already
- * OpenAI-shaped — pass through status + body (no logging).
+ * Forward chat completion to OpenAI or OpenRouter (legacy multi-bill path).
  */
 export async function proxyOpenAiCompatibleChat(
   env: UpstreamEnv,
@@ -143,7 +200,6 @@ export async function proxyOpenAiCompatibleChat(
       body: JSON.stringify(upstreamBody),
     });
     const text = await res.text();
-    // Strip hop-by-hop; never forward set-cookie from upstream.
     return new Response(text, {
       status: res.status,
       headers: {
@@ -159,7 +215,7 @@ export async function proxyOpenAiCompatibleChat(
 }
 
 /**
- * OpenAI Whisper (multipart). Used when stt slot is whisper-1 / gpt-4o-transcribe.
+ * OpenAI Whisper (multipart) — legacy path only.
  */
 export async function proxyOpenAiTranscription(
   env: UpstreamEnv,
@@ -173,7 +229,6 @@ export async function proxyOpenAiTranscription(
 
   const form = new FormData();
   const name = opts.filename ?? 'audio.m4a';
-  // Copy into a plain ArrayBuffer-backed Uint8Array for Blob compatibility.
   const copy = new Uint8Array(audioBytes.byteLength);
   copy.set(audioBytes);
   form.append('file', new Blob([copy], { type: 'application/octet-stream' }), name);
@@ -188,7 +243,6 @@ export async function proxyOpenAiTranscription(
       body: form,
     });
     const text = await res.text();
-    // Normalize to { text } when OpenAI returns JSON with text field already.
     if (res.ok) {
       try {
         const j = JSON.parse(text) as { text?: string };
@@ -217,12 +271,19 @@ export async function proxyOpenAiTranscription(
 
 export function upstreamCapabilities(env: UpstreamEnv): {
   workersAi: boolean;
-  openai: boolean;
-  openrouter: boolean;
+  aiGateway: boolean;
+  gatewayId: string | null;
+  /** Legacy multi-bill HTTP (off by default). */
+  legacyHttp: boolean;
+  openaiKey: boolean;
+  openrouterKey: boolean;
 } {
   return {
     workersAi: true,
-    openai: Boolean(env.OPENAI_API_KEY?.trim()),
-    openrouter: Boolean(env.OPENROUTER_API_KEY?.trim()),
+    aiGateway: Boolean(gatewayId(env)),
+    gatewayId: gatewayId(env),
+    legacyHttp: legacyHttpAllowed(env),
+    openaiKey: Boolean(env.OPENAI_API_KEY?.trim()),
+    openrouterKey: Boolean(env.OPENROUTER_API_KEY?.trim()),
   };
 }

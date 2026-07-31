@@ -46,7 +46,7 @@ export type ChatSlot = (typeof CHAT_SLOTS)[number];
 export const STT_SLOT = 'stt' as const;
 export type ModelSlot = ChatSlot | typeof STT_SLOT;
 
-export type ModelProviderHint = 'workers-ai' | 'openai' | 'openrouter';
+export type ModelProviderHint = 'workers-ai' | 'ai-gateway' | 'openai' | 'openrouter';
 
 export type ModelOption = {
   id: string;
@@ -60,19 +60,23 @@ export type ModelOption = {
 /**
  * Curated catalog for dashboard dropdowns. Custom ids outside this list are
  * also allowed when they pass {@link isSafeModelId}.
+ *
+ * - `workers-ai`: `@cf/…` → Neurons on CF
+ * - `ai-gateway`: third-party via AI Gateway Unified Billing (same CF bill)
  */
 export const CHAT_MODEL_OPTIONS: readonly ModelOption[] = [
-  // ── OpenAI (needs OPENAI_API_KEY) ───────────────────────────────────────
-  { id: 'gpt-4o-mini', label: 'GPT-4o mini', tier: 'fast', provider: 'openai' },
-  { id: 'gpt-4o', label: 'GPT-4o', tier: 'strong', provider: 'openai' },
-  { id: 'gpt-4.1-nano', label: 'GPT-4.1 nano', tier: 'fast', provider: 'openai' },
-  { id: 'gpt-4.1-mini', label: 'GPT-4.1 mini', tier: 'fast', provider: 'openai' },
-  { id: 'gpt-4.1', label: 'GPT-4.1', tier: 'strong', provider: 'openai' },
-  { id: 'o4-mini', label: 'o4-mini', tier: 'standard', provider: 'openai' },
-  // OpenRouter-style openai/ slugs (still go to OpenAI API when key set)
-  { id: 'openai/gpt-4o-mini', label: 'openai/gpt-4o-mini', tier: 'fast', provider: 'openai' },
-  { id: 'openai/gpt-4o', label: 'openai/gpt-4o', tier: 'strong', provider: 'openai' },
-  // ── Workers AI (env.AI binding) ─────────────────────────────────────────
+  // ── AI Gateway / Unified Billing (needs AI_GATEWAY_ID + CF credits) ─────
+  { id: 'openai/gpt-4o-mini', label: 'GPT-4o mini', tier: 'fast', provider: 'ai-gateway' },
+  { id: 'openai/gpt-4o', label: 'GPT-4o', tier: 'strong', provider: 'ai-gateway' },
+  { id: 'openai/gpt-4.1-nano', label: 'GPT-4.1 nano', tier: 'fast', provider: 'ai-gateway' },
+  { id: 'openai/gpt-4.1-mini', label: 'GPT-4.1 mini', tier: 'fast', provider: 'ai-gateway' },
+  { id: 'openai/gpt-4.1', label: 'GPT-4.1', tier: 'strong', provider: 'ai-gateway' },
+  { id: 'openai/o4-mini', label: 'o4-mini', tier: 'standard', provider: 'ai-gateway' },
+  { id: 'anthropic/claude-3.5-haiku', label: 'Claude 3.5 Haiku', tier: 'fast', provider: 'ai-gateway' },
+  { id: 'anthropic/claude-sonnet-4', label: 'Claude Sonnet 4', tier: 'strong', provider: 'ai-gateway' },
+  { id: 'google/gemini-2.5-flash', label: 'Gemini 2.5 Flash', tier: 'fast', provider: 'ai-gateway' },
+  { id: 'google/gemini-2.5-pro', label: 'Gemini 2.5 Pro', tier: 'strong', provider: 'ai-gateway' },
+  // ── Workers AI (env.AI, Neurons) ────────────────────────────────────────
   { id: '@cf/openai/gpt-oss-120b', label: 'CF gpt-oss-120b', tier: 'strong', provider: 'workers-ai' },
   { id: '@cf/openai/gpt-oss-20b', label: 'CF gpt-oss-20b', tier: 'standard', provider: 'workers-ai' },
   { id: '@cf/meta/llama-3.3-70b-instruct-fp8-fast', label: 'CF Llama 3.3 70B', tier: 'strong', provider: 'workers-ai' },
@@ -82,20 +86,12 @@ export const CHAT_MODEL_OPTIONS: readonly ModelOption[] = [
   { id: '@cf/meta/llama-3.2-1b-instruct', label: 'CF Llama 3.2 1B', tier: 'fast', provider: 'workers-ai' },
   { id: '@cf/qwen/qwen3-30b-a3b-fp8', label: 'CF Qwen3 30B-A3B', tier: 'standard', provider: 'workers-ai' },
   { id: '@cf/google/gemma-3-12b-it', label: 'CF Gemma 3 12B', tier: 'standard', provider: 'workers-ai' },
-  // ── OpenRouter examples (needs OPENROUTER_API_KEY) ──────────────────────
-  { id: 'anthropic/claude-3.5-haiku', label: 'Claude 3.5 Haiku', tier: 'fast', provider: 'openrouter' },
-  { id: 'anthropic/claude-sonnet-4', label: 'Claude Sonnet 4', tier: 'strong', provider: 'openrouter' },
-  { id: 'google/gemini-2.5-flash', label: 'Gemini 2.5 Flash', tier: 'fast', provider: 'openrouter' },
-  { id: 'google/gemini-2.5-pro', label: 'Gemini 2.5 Pro', tier: 'strong', provider: 'openrouter' },
 ] as const;
 
 export const STT_MODEL_OPTIONS: readonly ModelOption[] = [
   { id: '@cf/openai/whisper-large-v3-turbo', label: 'CF Whisper large-v3-turbo', tier: 'stt', provider: 'workers-ai' },
   { id: '@cf/openai/whisper-large-v3', label: 'CF Whisper large-v3', tier: 'stt', provider: 'workers-ai' },
   { id: '@cf/openai/whisper', label: 'CF Whisper base', tier: 'stt', provider: 'workers-ai' },
-  { id: 'whisper-1', label: 'OpenAI whisper-1', tier: 'stt', provider: 'openai' },
-  { id: 'gpt-4o-mini-transcribe', label: 'OpenAI gpt-4o-mini-transcribe', tier: 'stt', provider: 'openai' },
-  { id: 'gpt-4o-transcribe', label: 'OpenAI gpt-4o-transcribe', tier: 'stt', provider: 'openai' },
 ] as const;
 
 /**

@@ -28,6 +28,8 @@ export type DashboardEnv = {
   ALLOWED_BUNDLE_IDS?: string;
   ALLOWED_PRODUCT_IDS?: string;
   ALLOW_SANDBOX?: string;
+  AI_GATEWAY_ID?: string;
+  ALLOW_LEGACY_HTTP_UPSTREAM?: string;
   OPENAI_API_KEY?: string;
   OPENAI_BASE_URL?: string;
   OPENROUTER_API_KEY?: string;
@@ -303,7 +305,17 @@ function renderDashboard(data: Awaited<ReturnType<typeof buildStatsPayload>>): s
   };
   const routing = models.routing;
   const maxReq = Math.max(1, ...history.map(h => h.requests));
-  const upstream = (data.upstream ?? {}) as { workersAi?: boolean; openai?: boolean; openrouter?: boolean };
+  const upstream = (data.upstream ?? {}) as {
+    workersAi?: boolean;
+    aiGateway?: boolean;
+    gatewayId?: string | null;
+    legacyHttp?: boolean;
+    openaiKey?: boolean;
+    openrouterKey?: boolean;
+    // legacy field names (older payloads)
+    openai?: boolean;
+    openrouter?: boolean;
+  };
 
   const modelRows = Object.entries(today.byModel)
     .sort((a, b) => b[1] - a[1])
@@ -383,8 +395,8 @@ function renderDashboard(data: Awaited<ReturnType<typeof buildStatsPayload>>): s
       <p class="sub">
         <span class="pill">${escapeHtml(String(data.environment))}</span>
         ${pill(upstream.workersAi, 'Workers AI')}
-        ${pill(upstream.openai, 'OpenAI')}
-        ${pill(upstream.openrouter, 'OpenRouter')}
+        ${pill(upstream.aiGateway ?? false, `AI Gateway${upstream.gatewayId ? `:${upstream.gatewayId}` : ''}`)}
+        ${upstream.legacyHttp ? pill(true, 'legacy HTTP') : ''}
         <span class="pill">${escapeHtml(String(data.day))} UTC</span>
         ${data.config && (data.config as { kvBound?: boolean }).kvBound ? '<span class="pill ok">KV</span>' : '<span class="pill warn">mem-only</span>'}
       </p>
@@ -409,10 +421,11 @@ function renderDashboard(data: Awaited<ReturnType<typeof buildStatsPayload>>): s
   <div class="panel" id="model-routing-panel">
     <h2>Model routing (live)</h2>
     <p class="sub">
-      Per-task model — Workers AI (<span class="mono">@cf/…</span>), OpenAI (<span class="mono">gpt-4o-mini</span>),
-      OpenRouter (<span class="mono">anthropic/…</span>), or any custom id. Saved to KV (no redeploy).
-      App sends <span class="mono">X-Modocus-Scene</span>. OpenAI needs secret <span class="mono">OPENAI_API_KEY</span>;
-      OpenRouter needs <span class="mono">OPENROUTER_API_KEY</span>.
+      Per-task model — <span class="mono">@cf/…</span> → Workers AI (Neurons);
+      <span class="mono">openai/…</span> · <span class="mono">anthropic/…</span> · <span class="mono">google/…</span>
+      → AI Gateway Unified Billing (same Cloudflare account). Saved to KV (no redeploy).
+      App sends <span class="mono">X-Modocus-Scene</span>. Requires var <span class="mono">AI_GATEWAY_ID</span>
+      + Gateway credits in the CF dashboard.
     </p>
     <form id="model-routing-form" class="slot-grid">
       ${slotRows}
@@ -424,8 +437,7 @@ function renderDashboard(data: Awaited<ReturnType<typeof buildStatsPayload>>): s
     </form>
     <p class="sub" style="margin-top:12px">Last saved: <span class="mono" id="model-updated-at">${escapeHtml(routing?.updatedAt ?? 'defaults')}</span>
       · API: <span class="mono">GET/PUT /dashboard/api/models</span>
-      ${!upstream.openai ? ' · <span class="warn">OpenAI key missing — gpt-4o-mini etc. will 503</span>' : ''}
-      ${!upstream.openrouter ? ' · <span class="warn">OpenRouter key missing — org/model slugs will 503</span>' : ''}
+      ${!upstream.aiGateway ? ' · <span class="warn">AI_GATEWAY_ID missing — third-party models will 503</span>' : ''}
     </p>
   </div>
 
