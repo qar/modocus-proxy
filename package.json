@@ -1,0 +1,24 @@
+{
+  "name": "modocus-proxy",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Modocus built-in AI edge proxy (Cloudflare Workers)",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test src/*.test.ts",
+    "deploy:prod": "wrangler deploy",
+    "deploy:staging": "wrangler deploy --env staging"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260101.0",
+    "typescript": "^5.8.0",
+    "wrangler": "^4.0.0",
+    "tsx": "^4.19.0",
+    "@types/node": "^22.0.0"
+  },
+  "dependencies": {
+    "jose": "^6.2.5"
+  }
+}

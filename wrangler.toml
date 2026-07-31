@@ -1,0 +1,52 @@
+name = "modocus-ai-proxy"
+main = "src/index.ts"
+compatibility_date = "2026-01-01"
+compatibility_flags = ["nodejs_compat"]
+workers_dev = true
+
+[ai]
+binding = "AI"
+
+# production (default deploy)
+[vars]
+ENVIRONMENT = "production"
+ALLOWED_BUNDLE_IDS = "app.modocus,app.modocus.preview,app.modocus.development"
+ALLOWED_PRODUCT_IDS = "app.modocus.ai.monthly,app.modocus.ai.yearly"
+ALLOW_SANDBOX = "true"
+
+[[kv_namespaces]]
+binding = "USAGE"
+id = "57dbbb779a7e412eb5398b2a5cbd6174"
+
+[[routes]]
+pattern = "ai.modocus.app/*"
+zone_name = "modocus.app"
+
+# Secrets:
+#   DASHBOARD_TOKEN     — operator dashboard (≥16 chars) on prod + staging
+#   DEV_BYPASS_TOKEN    — staging only
+#   OPENAI_API_KEY      — optional; enables gpt-4o-mini / gpt-4o / whisper-1 routing
+#   OPENROUTER_API_KEY  — optional; enables anthropic/… google/… etc.
+# Optional vars: OPENAI_BASE_URL, OPENROUTER_BASE_URL
+
+# ── staging ────────────────────────────────────────────────────────────────
+[env.staging]
+name = "modocus-ai-proxy-staging"
+workers_dev = true
+preview_urls = false
+routes = []
+
+[env.staging.ai]
+binding = "AI"
+
+[env.staging.vars]
+ENVIRONMENT = "staging"
+ALLOWED_BUNDLE_IDS = "app.modocus,app.modocus.preview,app.modocus.development"
+ALLOWED_PRODUCT_IDS = "app.modocus.ai.monthly,app.modocus.ai.yearly"
+ALLOW_SANDBOX = "true"
+
+[[env.staging.kv_namespaces]]
+binding = "USAGE"
+id = "57dbbb779a7e412eb5398b2a5cbd6174"
+
+# Secrets (staging only): DEV_BYPASS_TOKEN
