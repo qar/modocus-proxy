@@ -259,7 +259,7 @@ export async function handleChatCompletions(
     return runAiChat(ai, upstreamModel, inputs, gw);
   }
 
-  // Workers AI binding — direct Neurons path (no gateway hop) for lower latency.
+  // Direct Workers AI only when AI_GATEWAY_ID is unset (resolveUpstream fallback).
   return runAiChat(ai, upstreamModel, inputs, null);
 }
 
@@ -339,11 +339,12 @@ export async function handleTranscriptions(
   const model = resolveSttModel(modelReq, routing);
   const bytes = base64ToBytes(b64);
   const { provider, model: upstreamModel } = resolveUpstream(model, env);
+  const isCf = upstreamModel.startsWith('@cf/');
 
-  // Third-party STT: prefer legacy OpenAI multipart when key present; Gateway STT
-  // via AI.run is model-dependent — keep @cf whisper as the default path.
-  if (provider === 'openai' || (provider === 'ai-gateway' && upstreamModel.includes('whisper'))) {
-    if (env.OPENAI_API_KEY?.trim()) {
+  // Third-party STT (non-@cf): legacy OpenAI multipart when key present.
+  // @cf whisper goes through Workers AI (optionally via Gateway) below.
+  if (!isCf && (provider === 'openai' || provider === 'ai-gateway')) {
+    if (env.OPENAI_API_KEY?.trim() && (provider === 'openai' || upstreamModel.includes('whisper') || upstreamModel.startsWith('openai/'))) {
       const openaiModel = upstreamModel.startsWith('openai/')
         ? upstreamModel.slice('openai/'.length)
         : upstreamModel;
@@ -352,18 +353,16 @@ export async function handleTranscriptions(
         filename: 'audio.m4a',
       });
     }
-    if (provider === 'ai-gateway') {
-      return openaiError(
-        503,
-        'third-party STT requires OPENAI_API_KEY (legacy) or use @cf whisper models',
-        'upstream_not_configured',
-      );
-    }
+    return openaiError(
+      503,
+      'third-party STT requires OPENAI_API_KEY (legacy) or use @cf whisper models',
+      'upstream_not_configured',
+    );
   }
   if (provider === 'openrouter') {
     return openaiError(400, 'stt_openrouter_unsupported', 'bad_request');
   }
-  if (provider === 'ai-gateway') {
+  if (!isCf) {
     return openaiError(
       400,
       'stt_use_workers_ai_whisper',
@@ -374,6 +373,10 @@ export async function handleTranscriptions(
   // Workers AI Whisper expects `audio` as number[] (byte values) for classic
   // models; large-v3-turbo also accepts base64 string in some versions — try
   // number[] first (documented for @cf/openai/whisper*).
+  // When AI_GATEWAY_ID is set, resolveUpstream marks provider ai-gateway so we
+  // pass gateway options (same as chat) for CF dashboard logs.
+  const gw = provider === 'ai-gateway' ? gatewayId(env) : null;
+  const runOpts = gw ? { gateway: { id: gw } } : undefined;
   const audioArr = Array.from(bytes);
 
   const inputs: Record<string, unknown> = {
@@ -383,7 +386,7 @@ export async function handleTranscriptions(
     inputs.language = language;
 
   try {
-    const result = await ai.run(upstreamModel, inputs);
+    const result = await ai.run(upstreamModel, inputs, runOpts);
     const text = extractText(result);
     return new Response(JSON.stringify({ text }), {
       status: 200,
@@ -396,7 +399,7 @@ export async function handleTranscriptions(
       const result = await ai.run(upstreamModel, {
         audio: b64,
         ...(language ? { language } : {}),
-      });
+      }, runOpts);
       const text = extractText(result);
       return new Response(JSON.stringify({ text }), {
         status: 200,

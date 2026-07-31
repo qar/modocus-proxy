@@ -2,7 +2,9 @@
  * Upstream resolution and optional legacy HTTP providers.
  *
  * Primary paths (Cloudflare bill):
- *   - `@cf/…`     → Workers AI binding (Neurons)
+ *   - `@cf/…`     → AI Gateway when `AI_GATEWAY_ID` is set
+ *                   (`env.AI.run(model, inputs, { gateway })` — Workers AI + Gateway logs/Neurons);
+ *                   else direct Workers AI binding (no gateway hop).
  *   - third-party → AI Gateway via `env.AI.run(model, inputs, { gateway })`
  *                   (Unified Billing credits on the same CF account)
  *
@@ -74,7 +76,8 @@ export function normalizeGatewayModelId(modelId: string): string {
 /**
  * Decide provider + upstream model id.
  *
- * Without env: pure routing rules (gateway preferred for non-@cf).
+ * Without env: pure routing rules (`@cf` → workers-ai; others → ai-gateway).
+ * With env + `AI_GATEWAY_ID`: `@cf` also → ai-gateway (logs + same AI.run path).
  * With env: may fall back to legacy HTTP when explicitly allowed + keyed.
  */
 export function resolveUpstream(modelId: string, env?: UpstreamEnv): ResolvedUpstream {
@@ -89,8 +92,12 @@ export function resolveUpstream(modelId: string, env?: UpstreamEnv): ResolvedUps
   if (m.startsWith('http:openrouter/'))
     return { provider: 'openrouter', model: m.slice('http:openrouter/'.length) };
 
-  if (m.startsWith('@cf/'))
+  // Workers AI models: prefer Gateway hop when configured (dashboard logs).
+  if (m.startsWith('@cf/')) {
+    if (gatewayId(env ?? {}))
+      return { provider: 'ai-gateway', model: m };
     return { provider: 'workers-ai', model: m };
+  }
 
   // openrouter/… → legacy OpenRouter only when allowed + key; else strip prefix → gateway
   if (m.startsWith('openrouter/')) {
@@ -114,6 +121,9 @@ export function resolveUpstream(modelId: string, env?: UpstreamEnv): ResolvedUps
   if (!gatewayModel.startsWith('@cf/'))
     return { provider: 'ai-gateway', model: gatewayModel };
 
+  // Normalized back to @cf (unusual) — same gateway-if-configured rule
+  if (gatewayId(env ?? {}))
+    return { provider: 'ai-gateway', model: gatewayModel };
   return { provider: 'workers-ai', model: gatewayModel };
 }
 

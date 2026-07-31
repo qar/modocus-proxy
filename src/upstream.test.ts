@@ -16,11 +16,26 @@ describe('normalizeGatewayModelId', () => {
 });
 
 describe('resolveUpstream', () => {
-  it('routes @cf to workers-ai', () => {
+  it('routes @cf to workers-ai when no gateway id', () => {
     assert.deepEqual(resolveUpstream('@cf/openai/gpt-oss-120b'), {
       provider: 'workers-ai',
       model: '@cf/openai/gpt-oss-120b',
     });
+    assert.deepEqual(
+      resolveUpstream('@cf/openai/gpt-oss-120b', {}),
+      { provider: 'workers-ai', model: '@cf/openai/gpt-oss-120b' },
+    );
+  });
+
+  it('routes @cf through ai-gateway when AI_GATEWAY_ID is set', () => {
+    assert.deepEqual(
+      resolveUpstream('@cf/openai/gpt-oss-120b', { AI_GATEWAY_ID: 'modocus' }),
+      { provider: 'ai-gateway', model: '@cf/openai/gpt-oss-120b' },
+    );
+    assert.deepEqual(
+      resolveUpstream('@cf/openai/whisper', { AI_GATEWAY_ID: 'modocus' }),
+      { provider: 'ai-gateway', model: '@cf/openai/whisper' },
+    );
   });
 
   it('routes OpenAI / Claude / Gemini to ai-gateway', () => {

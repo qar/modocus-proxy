@@ -421,11 +421,11 @@ function renderDashboard(data: Awaited<ReturnType<typeof buildStatsPayload>>): s
   <div class="panel" id="model-routing-panel">
     <h2>Model routing (live)</h2>
     <p class="sub">
-      Per-task model — <span class="mono">@cf/…</span> → Workers AI (Neurons);
+      Per-task model — with <span class="mono">AI_GATEWAY_ID</span>, both
+      <span class="mono">@cf/…</span> (Workers AI / Neurons) and
       <span class="mono">openai/…</span> · <span class="mono">anthropic/…</span> · <span class="mono">google/…</span>
-      → AI Gateway Unified Billing (same Cloudflare account). Saved to KV (no redeploy).
-      App sends <span class="mono">X-Modocus-Scene</span>. Requires var <span class="mono">AI_GATEWAY_ID</span>
-      + Gateway credits in the CF dashboard.
+      (Unified Billing) go through AI Gateway so logs show in the CF dashboard.
+      Saved to KV (no redeploy). App sends <span class="mono">X-Modocus-Scene</span>.
     </p>
     <form id="model-routing-form" class="slot-grid">
       ${slotRows}
