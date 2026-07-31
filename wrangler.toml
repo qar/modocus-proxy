@@ -16,6 +16,7 @@ ALLOW_SANDBOX = "true"
 # AI Gateway name in this account (Dashboard → AI → AI Gateway).
 # Third-party models (openai/…, anthropic/…) bill via Unified Billing credits.
 AI_GATEWAY_ID = "modocus"
+# Never set GATEWAY_COLLECT_LOG=true in production — stores full user prompts in CF logs.
 
 [[kv_namespaces]]
 binding = "USAGE"

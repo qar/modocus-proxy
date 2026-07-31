@@ -32,6 +32,11 @@ export type UpstreamEnv = {
    */
   ROUTE_CF_VIA_GATEWAY?: string;
   /**
+   * When "true", AI Gateway stores full request/response bodies in CF logs.
+   * Default off — personal todo/chat content must not land in the dashboard.
+   */
+  GATEWAY_COLLECT_LOG?: string;
+  /**
    * When "true", allow direct OpenAI/OpenRouter HTTP if keys are present
    * (multi-bill fallback). Default off — third-party goes through AI Gateway.
    */

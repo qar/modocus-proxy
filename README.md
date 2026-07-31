@@ -59,6 +59,9 @@ change them on the dashboard.
 
 Requires var **`AI_GATEWAY_ID`** (default `modocus` in `wrangler.toml`) for third-party models.  
 `@cf` stays on direct Workers AI by default (avoids some accounts' Gateway payment errors on Neurons).  
+**Privacy:** Gateway calls set `collectLog: false` by default so prompts/chat are **not** stored in
+the AI Gateway dashboard. Only set `GATEWAY_COLLECT_LOG=true` for short debug windows. Also turn
+**Logs off** under Gateway → Settings, and delete any existing log entries that contain user text.  
 Create the gateway and load credits: CF Dashboard → **AI → AI Gateway**.
 
 Custom ids are allowed (safe charset). Dashboard dropdown lists common options

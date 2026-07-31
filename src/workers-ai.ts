@@ -176,15 +176,35 @@ function buildChatInputs(
   return inputs;
 }
 
+/**
+ * Gateway options for AI.run. Default **collectLog: false** — AI Gateway
+ * otherwise stores full prompts/completions (todo titles, chat history) in the
+ * CF dashboard. Ops can set GATEWAY_COLLECT_LOG=true only for short debug windows.
+ */
+function gatewayRunOptions(gw: string, env?: UpstreamEnv): {
+  gateway: { id: string; collectLog: boolean; skipCache?: boolean };
+} {
+  const collect = (env?.GATEWAY_COLLECT_LOG ?? '').trim().toLowerCase() === 'true';
+  return {
+    gateway: {
+      id: gw,
+      collectLog: collect,
+      // Never cache chat/tool payloads — personal task data must not be shared across users.
+      skipCache: true,
+    },
+  };
+}
+
 async function runAiChat(
   ai: AiBinding,
   model: string,
   inputs: Record<string, unknown>,
   gw?: string | null,
+  env?: UpstreamEnv,
 ): Promise<Response> {
   try {
     const result = gw
-      ? await ai.run(model, inputs, { gateway: { id: gw } })
+      ? await ai.run(model, inputs, gatewayRunOptions(gw, env))
       : await ai.run(model, inputs);
     const text = extractText(result);
     const toolCalls = extractToolCalls(result);
@@ -256,11 +276,11 @@ export async function handleChatCompletions(
         'gateway_not_configured',
       );
     }
-    return runAiChat(ai, upstreamModel, inputs, gw);
+    return runAiChat(ai, upstreamModel, inputs, gw, env);
   }
 
   // Direct Workers AI only when AI_GATEWAY_ID is unset (resolveUpstream fallback).
-  return runAiChat(ai, upstreamModel, inputs, null);
+  return runAiChat(ai, upstreamModel, inputs, null, env);
 }
 
 function base64ToBytes(b64: string): Uint8Array {
@@ -373,10 +393,8 @@ export async function handleTranscriptions(
   // Workers AI Whisper expects `audio` as number[] (byte values) for classic
   // models; large-v3-turbo also accepts base64 string in some versions — try
   // number[] first (documented for @cf/openai/whisper*).
-  // When AI_GATEWAY_ID is set, resolveUpstream marks provider ai-gateway so we
-  // pass gateway options (same as chat) for CF dashboard logs.
   const gw = provider === 'ai-gateway' ? gatewayId(env) : null;
-  const runOpts = gw ? { gateway: { id: gw } } : undefined;
+  const runOpts = gw ? gatewayRunOptions(gw, env) : undefined;
   const audioArr = Array.from(bytes);
 
   const inputs: Record<string, unknown> = {
