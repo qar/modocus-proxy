@@ -23,8 +23,8 @@ import { upstreamCapabilities } from './upstream';
 export type DashboardEnv = {
   DASHBOARD_TOKEN?: string;
   ENVIRONMENT?: string;
-  DAILY_LIMIT?: string;
   USAGE?: KVNamespace;
+  USAGE_LEDGER?: DurableObjectNamespace;
   ALLOWED_BUNDLE_IDS?: string;
   ALLOWED_PRODUCT_IDS?: string;
   ALLOW_SANDBOX?: string;
@@ -48,7 +48,6 @@ const SLOT_LABELS: Record<ModelSlot, string> = {
 };
 
 const COOKIE = 'modocus_dash';
-const DEFAULT_DAILY_LIMIT = 80;
 
 function timingSafeEqual(a: string, b: string): boolean {
   if (a.length !== b.length)
@@ -236,13 +235,12 @@ function statusClass(s: number): string {
 
 export async function buildStatsPayload(env: DashboardEnv): Promise<Record<string, unknown>> {
   const day = utcDay();
-  const dailyLimit = Number(env.DAILY_LIMIT ?? DEFAULT_DAILY_LIMIT) || DEFAULT_DAILY_LIMIT;
   const history = await loadHistory(env.USAGE, 7);
   const today = history[0] ?? (await loadHistory(env.USAGE, 1))[0];
   if (!today)
     throw new Error('metrics unavailable');
   const events = await loadEvents(env.USAGE);
-  const subjects = await listSubjectUsage(env.USAGE, day, dailyLimit);
+  const subjects = listSubjectUsage(today);
   const cost = roughCostHint(today);
   const routing = await loadModelConfig(env.USAGE, env.ENVIRONMENT);
   const catalog = catalogPayload(routing);
@@ -253,7 +251,7 @@ export async function buildStatsPayload(env: DashboardEnv): Promise<Record<strin
     environment: (env.ENVIRONMENT ?? 'production').toLowerCase(),
     upstream: caps,
     day,
-    dailyLimitPerSubject: dailyLimit,
+    operationLimitPerPeriod: 300,
     today,
     history,
     subjects,
@@ -273,6 +271,7 @@ export async function buildStatsPayload(env: DashboardEnv): Promise<Record<strin
       allowedProductIds: env.ALLOWED_PRODUCT_IDS ?? '(default)',
       allowSandbox: env.ALLOW_SANDBOX !== 'false',
       kvBound: Boolean(env.USAGE),
+      usageLedgerBound: Boolean(env.USAGE_LEDGER),
       openaiBase: env.OPENAI_BASE_URL ?? 'https://api.openai.com/v1',
       openrouterBase: env.OPENROUTER_BASE_URL ?? 'https://openrouter.ai/api/v1',
     },
@@ -287,8 +286,32 @@ export async function buildStatsPayload(env: DashboardEnv): Promise<Record<strin
 function renderDashboard(data: Awaited<ReturnType<typeof buildStatsPayload>>): string {
   const today = data.today as DayAgg;
   const history = data.history as DayAgg[];
-  const subjects = data.subjects as { subject: string; n: number; limit: number }[];
-  const events = data.events as { ts: string; route: string; status: number; model?: string; auth?: string; subject?: string; ms?: number; note?: string }[];
+  const subjects = data.subjects as {
+    subject: string;
+    requests: number;
+    operations: number;
+    inputTokens: number;
+    outputTokens: number;
+    audioSeconds: number;
+    used: number;
+    limit: number;
+    periodEndMs?: number;
+  }[];
+  const events = data.events as {
+    ts: string;
+    route: string;
+    status: number;
+    model?: string;
+    auth?: string;
+    subject?: string;
+    operation?: string;
+    scene?: string;
+    inputTokens?: number;
+    outputTokens?: number;
+    audioSeconds?: number;
+    ms?: number;
+    note?: string;
+  }[];
   const cost = data.costHint as ReturnType<typeof roughCostHint>;
   const models = data.models as {
     defaultChat?: string;
@@ -323,18 +346,27 @@ function renderDashboard(data: Awaited<ReturnType<typeof buildStatsPayload>>): s
     .join('') || '<tr><td colspan="2" class="sub">No model traffic today</td></tr>';
 
   const subRows = subjects
-    .map(s => `<tr><td class="mono">${escapeHtml(s.subject)}</td><td>${s.n} / ${s.limit}</td></tr>`)
-    .join('') || '<tr><td colspan="2" class="sub">No subject counters today</td></tr>';
+    .map(s => `<tr>
+      <td class="mono">${escapeHtml(s.subject)}</td>
+      <td>${s.used} / ${s.limit}</td>
+      <td>${s.requests}</td>
+      <td>${(s.inputTokens + s.outputTokens).toLocaleString()}</td>
+      <td>${Math.round(s.audioSeconds)}s</td>
+      <td>${s.periodEndMs ? escapeHtml(new Date(s.periodEndMs).toISOString().slice(0, 10)) : '—'}</td>
+    </tr>`)
+    .join('') || '<tr><td colspan="6" class="sub">No subject traffic today</td></tr>';
 
   const evRows = events.slice(0, 25).map(e => `
     <tr>
       <td class="mono">${escapeHtml(e.ts.slice(11, 19))}Z</td>
-      <td>${escapeHtml(e.route)}</td>
+      <td>${escapeHtml(e.scene ?? e.route)}</td>
       <td class="${statusClass(e.status)}">${e.status}</td>
       <td class="mono">${escapeHtml(e.model ?? '—')}</td>
       <td class="mono">${escapeHtml(e.subject ?? e.auth ?? '—')}</td>
+      <td class="mono">${escapeHtml(e.operation ?? '—')}</td>
+      <td>${e.inputTokens || e.outputTokens ? `${e.inputTokens ?? 0}/${e.outputTokens ?? 0}` : e.audioSeconds ? `${Math.round(e.audioSeconds)}s` : '—'}</td>
       <td>${e.ms != null ? `${e.ms}ms` : '—'}</td>
-    </tr>`).join('') || '<tr><td colspan="6" class="sub">No events yet</td></tr>';
+    </tr>`).join('') || '<tr><td colspan="8" class="sub">No events yet</td></tr>';
 
   const bars = history.slice().reverse().map(h => {
     const pct = Math.round((h.requests / maxReq) * 100);
@@ -409,6 +441,7 @@ function renderDashboard(data: Awaited<ReturnType<typeof buildStatsPayload>>): s
 
   <div class="grid">
     <div class="card"><div class="label">Requests today</div><div class="value">${today.requests}</div></div>
+    <div class="card"><div class="label">Operations today</div><div class="value">${today.operations}</div></div>
     <div class="card"><div class="label">Chat</div><div class="value">${today.chat}</div></div>
     <div class="card"><div class="label">STT</div><div class="value">${today.stt}</div></div>
     <div class="card"><div class="label">OK</div><div class="value ok">${today.ok}</div></div>
@@ -416,6 +449,8 @@ function renderDashboard(data: Awaited<ReturnType<typeof buildStatsPayload>>): s
     <div class="card"><div class="label">429 limited</div><div class="value ${today.rateLimited ? 'warn' : ''}">${today.rateLimited}</div></div>
     <div class="card"><div class="label">5xx</div><div class="value ${today.err5xx ? 'bad' : ''}">${today.err5xx}</div></div>
     <div class="card"><div class="label">Avg latency</div><div class="value" style="font-size:1.2rem">${fmtMs(today)}</div></div>
+    <div class="card"><div class="label">Tokens in / out</div><div class="value" style="font-size:1.05rem">${today.inputTokens.toLocaleString()} / ${today.outputTokens.toLocaleString()}</div></div>
+    <div class="card"><div class="label">Cloud audio</div><div class="value" style="font-size:1.2rem">${Math.round(today.audioSeconds)}s</div></div>
   </div>
 
   <div class="panel" id="model-routing-panel">
@@ -465,14 +500,14 @@ function renderDashboard(data: Awaited<ReturnType<typeof buildStatsPayload>>): s
   </div>
 
   <div class="panel">
-    <h2>Subjects today (daily cap ${data.dailyLimitPerSubject})</h2>
-    <table><thead><tr><th>Subject</th><th>Used</th></tr></thead><tbody>${subRows}</tbody></table>
+    <h2>Anonymous subjects today</h2>
+    <table><thead><tr><th>Subject</th><th>Period used</th><th>Requests</th><th>Tokens</th><th>Audio</th><th>Resets</th></tr></thead><tbody>${subRows}</tbody></table>
   </div>
 
   <div class="panel">
     <h2>Recent events</h2>
     <table>
-      <thead><tr><th>Time</th><th>Route</th><th>Status</th><th>Model</th><th>Who</th><th>ms</th></tr></thead>
+      <thead><tr><th>Time</th><th>Scene</th><th>Status</th><th>Model</th><th>Who</th><th>Operation</th><th>Usage</th><th>ms</th></tr></thead>
       <tbody>${evRows}</tbody>
     </table>
     <p class="sub">Auth today — jws: ${today.byAuth.jws} · bypass: ${today.byAuth.bypass} · none: ${today.byAuth.none}</p>

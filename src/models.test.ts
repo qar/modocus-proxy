@@ -18,13 +18,14 @@ import {
 } from './models';
 
 describe('defaults', () => {
-  it('ships gpt-oss-120b as default for all chat slots', () => {
-    assert.equal(STRONG_CHAT_MODEL, '@cf/openai/gpt-oss-120b');
-    assert.equal(DEFAULT_CHAT_MODEL, STRONG_CHAT_MODEL);
-    assert.equal(FAST_CHAT_MODEL, STRONG_CHAT_MODEL);
-    for (const slot of ['default', 'parse', 'plan', 'estimate', 'chat', 'insight', 'strong'] as const) {
-      assert.equal(DEFAULT_SLOT_MODELS[slot], '@cf/openai/gpt-oss-120b');
-    }
+  it('uses GPT-4o mini for user-facing text and nano for structured helpers', () => {
+    assert.equal(DEFAULT_CHAT_MODEL, 'openai/gpt-4o-mini');
+    assert.equal(STRONG_CHAT_MODEL, 'openai/gpt-4o-mini');
+    assert.equal(FAST_CHAT_MODEL, 'openai/gpt-4.1-nano');
+    for (const slot of ['default', 'chat', 'insight', 'strong'] as const)
+      assert.equal(DEFAULT_SLOT_MODELS[slot], 'openai/gpt-4o-mini');
+    for (const slot of ['parse', 'plan', 'estimate'] as const)
+      assert.equal(DEFAULT_SLOT_MODELS[slot], 'openai/gpt-4.1-nano');
   });
 });
 
@@ -90,13 +91,13 @@ describe('resolveChatModel with config', () => {
 
   it('defaults empty to default slot', () => {
     assert.equal(resolveChatModel(undefined, cfg), '@cf/openai/gpt-oss-120b');
-    assert.equal(resolveChatModel('', cfg), DEFAULT_CHAT_MODEL);
+    assert.equal(resolveChatModel('', cfg), '@cf/openai/gpt-oss-120b');
   });
 
-  it('pass-through unknown @cf without scene', () => {
+  it('does not let a client bypass the operator model map', () => {
     assert.equal(
       resolveChatModel('@cf/meta/llama-3.2-1b-instruct-custom', cfg),
-      '@cf/meta/llama-3.2-1b-instruct-custom',
+      '@cf/openai/gpt-oss-120b',
     );
   });
 });
@@ -111,6 +112,16 @@ describe('resolveSttModel', () => {
       slots: { stt: '@cf/openai/whisper' },
     });
     assert.equal(resolveSttModel('whisper-1', cfg), '@cf/openai/whisper');
+  });
+
+  it('does not let a client select an unconfigured STT model', () => {
+    const cfg = normalizeRoutingConfig({
+      slots: { stt: '@cf/openai/whisper-large-v3-turbo' },
+    });
+    assert.equal(
+      resolveSttModel('@cf/openai/whisper-expensive-custom', cfg),
+      '@cf/openai/whisper-large-v3-turbo',
+    );
   });
 });
 

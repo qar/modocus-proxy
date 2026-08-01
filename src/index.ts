@@ -16,11 +16,13 @@
  */
 
 import { authenticateBearer } from './auth';
+import {
+  handleAppStoreNotification,
+  isTransactionRevoked,
+} from './app-store-notifications';
 import { handleDashboard } from './dashboard';
 import {
-  memNoteSubject,
   recordMetric,
-  utcDay,
 } from './metrics';
 import {
   loadModelConfig,
@@ -29,6 +31,13 @@ import {
 } from './models';
 import { handleChatCompletions, handleTranscriptions, type AiBinding } from './workers-ai';
 import { upstreamCapabilities } from './upstream';
+import {
+  DEFAULT_OPERATION_LIMIT,
+  isValidOperationId,
+  type ReserveOperationResult,
+} from './usage-ledger';
+
+export { UsageLedger } from './usage-ledger';
 
 export interface Env {
   AI: AiBinding;
@@ -49,16 +58,13 @@ export interface Env {
   OPENROUTER_API_KEY?: string;
   OPENROUTER_BASE_URL?: string;
   USAGE?: KVNamespace;
-  DAILY_LIMIT?: string;
+  USAGE_LEDGER?: DurableObjectNamespace;
   ENVIRONMENT?: string;
   ALLOWED_BUNDLE_IDS?: string;
   ALLOWED_PRODUCT_IDS?: string;
   ALLOW_SANDBOX?: string;
+  SUBJECT_HASH_SALT?: string;
 }
-
-const DEFAULT_DAILY_LIMIT = 80;
-
-const memCounters = new Map<string, { day: string; n: number }>();
 
 function json(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
@@ -78,30 +84,83 @@ function extractBearer(req: Request): string | null {
   return m?.[1]?.trim() || null;
 }
 
-async function bumpUsage(
+async function reserveOperationQuota(
   env: Env,
   subject: string,
-): Promise<{ ok: boolean; n: number; limit: number }> {
-  const limit = Number(env.DAILY_LIMIT ?? DEFAULT_DAILY_LIMIT) || DEFAULT_DAILY_LIMIT;
-  const day = utcDay();
-  const key = `u:${day}:${subject}`;
+  operationId: string,
+  periodStartMs: number,
+  periodEndMs: number,
+): Promise<ReserveOperationResult | null> {
+  if (!env.USAGE_LEDGER)
+    return null;
+  const id = env.USAGE_LEDGER.idFromName(subject);
+  const stub = env.USAGE_LEDGER.get(id);
+  const response = await stub.fetch('https://usage-ledger/reserve', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      operationId,
+      periodStartMs,
+      periodEndMs,
+      limit: DEFAULT_OPERATION_LIMIT,
+    }),
+  });
+  if (!response.ok)
+    return null;
+  return await response.json() as ReserveOperationResult;
+}
 
-  if (env.USAGE) {
-    const raw = await env.USAGE.get(key);
-    const n = (raw ? Number(raw) : 0) + 1;
-    if (n > limit)
-      return { ok: false, n, limit };
-    await env.USAGE.put(key, String(n), { expirationTtl: 60 * 60 * 48 });
-    return { ok: true, n, limit };
+function withQuotaHeaders(response: Response, quota: ReserveOperationResult): Response {
+  const headers = new Headers(response.headers);
+  headers.set('x-modocus-operations-used', String(quota.used));
+  headers.set('x-modocus-operations-limit', String(quota.limit));
+  headers.set('x-modocus-period-ends-at', new Date(quota.periodEndMs).toISOString());
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
+
+async function shortHash(value: string): Promise<string> {
+  const bytes = new TextEncoder().encode(value);
+  const digest = await crypto.subtle.digest('SHA-256', bytes);
+  return [...new Uint8Array(digest)]
+    .map(byte => byte.toString(16).padStart(2, '0'))
+    .join('')
+    .slice(0, 16);
+}
+
+async function responseTokenUsage(response: Response): Promise<{
+  inputTokens: number;
+  outputTokens: number;
+}> {
+  if (!(response.headers.get('content-type') ?? '').includes('application/json'))
+    return { inputTokens: 0, outputTokens: 0 };
+  try {
+    const body = await response.clone().json() as {
+      usage?: {
+        prompt_tokens?: unknown;
+        completion_tokens?: unknown;
+        input_tokens?: unknown;
+        output_tokens?: unknown;
+      };
+    };
+    const input = body.usage?.prompt_tokens ?? body.usage?.input_tokens;
+    const output = body.usage?.completion_tokens ?? body.usage?.output_tokens;
+    return {
+      inputTokens: typeof input === 'number' && Number.isFinite(input) && input >= 0 ? input : 0,
+      outputTokens: typeof output === 'number' && Number.isFinite(output) && output >= 0 ? output : 0,
+    };
   }
+  catch {
+    return { inputTokens: 0, outputTokens: 0 };
+  }
+}
 
-  const cur = memCounters.get(key);
-  const n = (cur && cur.day === day ? cur.n : 0) + 1;
-  memCounters.set(key, { day, n });
-  memNoteSubject(day, subject, n);
-  if (n > limit)
-    return { ok: false, n, limit };
-  return { ok: true, n, limit };
+function audioSecondsFromRequest(request: Request): number {
+  const value = Number(request.headers.get('x-modocus-audio-seconds'));
+  return Number.isFinite(value) && value >= 0 && value <= 21_600 ? value : 0;
 }
 
 async function peekModel(
@@ -151,9 +210,16 @@ export default {
         ok: true,
         env: (env.ENVIRONMENT ?? 'production').toLowerCase(),
         upstream: caps,
+        operationQuota: {
+          limit: DEFAULT_OPERATION_LIMIT,
+          durableObjectBound: Boolean(env.USAGE_LEDGER),
+        },
         dashboard: Boolean(env.DASHBOARD_TOKEN && env.DASHBOARD_TOKEN.length >= 16),
       });
     }
+
+    if (req.method === 'POST' && path === '/apple/notifications')
+      return handleAppStoreNotification(req, env);
 
     // Operator dashboard (separate auth) — GET UI/API + PUT model routing
     if (path === '/dashboard' || path.startsWith('/dashboard/')) {
@@ -162,6 +228,14 @@ export default {
 
     if (!env.AI)
       return json({ error: { message: 'proxy_misconfigured', code: 'server' } }, 500);
+
+    const route = req.method === 'POST' && path === '/v1/chat/completions'
+      ? 'chat'
+      : req.method === 'POST' && path === '/v1/audio/transcriptions'
+        ? 'stt'
+        : null;
+    if (!route)
+      return json({ error: { message: 'not_found', code: 'bad_response' } }, 404);
 
     const token = extractBearer(req);
     const auth = await authenticateBearer(env, token);
@@ -177,42 +251,92 @@ export default {
       }, auth.status);
     }
 
-    const usage = await bumpUsage(env, auth.subject);
-    if (!usage.ok) {
+    if (auth.kind === 'jws' && auth.transaction) {
+      const revoked = await isTransactionRevoked(
+        env,
+        auth.subject,
+        auth.transaction.transactionId,
+      );
+      if (revoked == null)
+        return json({ error: { message: 'subscription_state_unavailable', code: 'server' } }, 500);
+      if (revoked)
+        return json({ error: { message: 'subscription_revoked', code: 'revoked' } }, 403);
+    }
+
+    const operationId = req.headers.get('x-modocus-operation-id');
+    if (!isValidOperationId(operationId)) {
+      return json({
+        error: {
+          message: 'operation_id_required',
+          code: 'operation_id_required',
+        },
+      }, 400);
+    }
+
+    const usage = await reserveOperationQuota(
+      env,
+      auth.subject,
+      operationId,
+      auth.periodStartMs,
+      auth.periodEndMs,
+    );
+    if (!usage) {
+      return json({ error: { message: 'quota_unavailable', code: 'server' } }, 500);
+    }
+    const operationHash = await shortHash(operationId);
+    const scene = req.headers.get('x-modocus-scene')?.trim() || route;
+    if (!usage.allowed) {
       await recordMetric(env.USAGE, {
-        route: 'other',
+        route,
         status: 429,
         authKind: auth.kind === 'dev_bypass' ? 'dev_bypass' : 'jws',
         subject: auth.subject,
-        note: 'usage_paused',
-      });
-      return json({
+        operationHash,
+        scene,
+        countedOperation: false,
+        quotaUsed: usage.used,
+        quotaLimit: usage.limit,
+        periodEndMs: usage.periodEndMs,
+        note: 'quota_exhausted',
+      }).catch(() => {});
+      return withQuotaHeaders(json({
         error: {
-          message: 'usage_paused',
-          code: 'usage_paused',
+          message: 'quota_exhausted',
+          code: 'quota_exhausted',
+          used: usage.used,
           limit: usage.limit,
+          periodEnd: new Date(usage.periodEndMs).toISOString(),
         },
-      }, 429);
+      }, 429), usage);
     }
 
     const authKind = auth.kind === 'dev_bypass' ? 'dev_bypass' as const : 'jws' as const;
 
-    if (req.method === 'POST' && path === '/v1/chat/completions') {
+    if (route === 'chat') {
       const model = await peekModel(req, 'chat', env.USAGE, env.ENVIRONMENT);
       const t0 = Date.now();
       const res = await handleChatCompletions(env.AI, req, undefined, env.USAGE, env.ENVIRONMENT, env);
+      const tokens = await responseTokenUsage(res);
       await recordMetric(env.USAGE, {
         route: 'chat',
         status: res.status,
         model,
         authKind,
         subject: auth.subject,
+        operationHash,
+        scene,
+        countedOperation: usage.counted,
+        inputTokens: tokens.inputTokens,
+        outputTokens: tokens.outputTokens,
+        quotaUsed: usage.used,
+        quotaLimit: usage.limit,
+        periodEndMs: usage.periodEndMs,
         ms: Date.now() - t0,
-      });
-      return res;
+      }).catch(() => {});
+      return withQuotaHeaders(res, usage);
     }
 
-    if (req.method === 'POST' && path === '/v1/audio/transcriptions') {
+    if (route === 'stt') {
       const model = await peekModel(req, 'stt', env.USAGE, env.ENVIRONMENT);
       const t0 = Date.now();
       const res = await handleTranscriptions(env.AI, req, undefined, env.USAGE, env.ENVIRONMENT, env);
@@ -222,9 +346,16 @@ export default {
         model,
         authKind,
         subject: auth.subject,
+        operationHash,
+        scene,
+        countedOperation: usage.counted,
+        audioSeconds: audioSecondsFromRequest(req),
+        quotaUsed: usage.used,
+        quotaLimit: usage.limit,
+        periodEndMs: usage.periodEndMs,
         ms: Date.now() - t0,
-      });
-      return res;
+      }).catch(() => {});
+      return withQuotaHeaders(res, usage);
     }
 
     return json({ error: { message: 'not_found', code: 'bad_response' } }, 404);

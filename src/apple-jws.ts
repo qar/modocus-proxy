@@ -22,7 +22,9 @@ export type VerifiedAppleTransaction = {
   transactionId: string;
   productId: string;
   bundleId: string;
+  purchaseDate: number;
   expiresDate: number;
+  revocationDate?: number;
   environment: AppleEnvironment;
   type: string;
 };
@@ -34,6 +36,7 @@ export type JwsVerifyErrorCode
     | 'bad_signature'
     | 'bad_claims'
     | 'expired'
+    | 'revoked'
     | 'wrong_bundle'
     | 'wrong_product';
 
@@ -50,6 +53,8 @@ export type JwsVerifyOptions = {
   allowedBundleIds: readonly string[];
   allowedProductIds: readonly string[];
   allowSandbox?: boolean;
+  acceptExpired?: boolean;
+  acceptRevoked?: boolean;
   nowMs?: number;
 };
 
@@ -145,13 +150,8 @@ function num(v: unknown): number | null {
   return null;
 }
 
-/**
- * Verify a StoreKit 2 transaction JWS and return normalized claims.
- */
-export async function verifyAppleTransactionJws(
-  token: string,
-  opts: JwsVerifyOptions,
-): Promise<VerifiedAppleTransaction> {
+/** Verify an Apple ES256/x5c compact JWS and return its JSON payload. */
+export async function verifyAppleSignedJws(token: string): Promise<Record<string, unknown>> {
   const parts = token.split('.');
   if (parts.length !== 3)
     throw new JwsVerifyError('malformed', 'not a compact JWS');
@@ -183,13 +183,26 @@ export async function verifyAppleTransactionJws(
     throw new JwsVerifyError('bad_signature', 'JWS signature invalid');
   }
 
-  let claims: Record<string, unknown>;
+  let claims: unknown;
   try {
-    claims = JSON.parse(new TextDecoder().decode(payloadBytes)) as Record<string, unknown>;
+    claims = JSON.parse(new TextDecoder().decode(payloadBytes)) as unknown;
   }
   catch {
     throw new JwsVerifyError('malformed', 'bad JWS payload');
   }
+  if (claims == null || typeof claims !== 'object' || Array.isArray(claims))
+    throw new JwsVerifyError('malformed', 'JWS payload must be an object');
+  return claims as Record<string, unknown>;
+}
+
+/**
+ * Verify a StoreKit 2 transaction JWS and return normalized claims.
+ */
+export async function verifyAppleTransactionJws(
+  token: string,
+  opts: JwsVerifyOptions,
+): Promise<VerifiedAppleTransaction> {
+  const claims = await verifyAppleSignedJws(token);
 
   const bundleId = str(claims.bundleId);
   const productId = str(claims.productId);
@@ -198,9 +211,11 @@ export async function verifyAppleTransactionJws(
   const type = str(claims.type) ?? '';
   const environmentRaw = str(claims.environment) ?? 'Production';
   const expiresDate = num(claims.expiresDate);
+  const purchaseDate = num(claims.purchaseDate);
+  const revocationDate = num(claims.revocationDate);
   const nowMs = opts.nowMs ?? Date.now();
 
-  if (!bundleId || !productId || !originalTransactionId || expiresDate == null)
+  if (!bundleId || !productId || !originalTransactionId || expiresDate == null || purchaseDate == null)
     throw new JwsVerifyError('bad_claims', 'missing required transaction claims');
 
   if (!opts.allowedBundleIds.includes(bundleId))
@@ -220,15 +235,19 @@ export async function verifyAppleTransactionJws(
   if (type && type !== 'Auto-Renewable Subscription')
     throw new JwsVerifyError('bad_claims', 'not an auto-renewable subscription');
 
-  if (expiresDate <= nowMs)
+  if (expiresDate <= nowMs && opts.acceptExpired !== true)
     throw new JwsVerifyError('expired', 'subscription expired');
+  if (revocationDate != null && revocationDate <= nowMs && opts.acceptRevoked !== true)
+    throw new JwsVerifyError('revoked', 'subscription revoked');
 
   return {
     originalTransactionId,
     transactionId: transactionId ?? originalTransactionId,
     productId,
     bundleId,
+    purchaseDate,
     expiresDate,
+    revocationDate: revocationDate ?? undefined,
     environment,
     type: type || 'Auto-Renewable Subscription',
   };

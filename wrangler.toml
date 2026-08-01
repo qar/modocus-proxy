@@ -11,7 +11,7 @@ binding = "AI"
 [vars]
 ENVIRONMENT = "production"
 ALLOWED_BUNDLE_IDS = "app.modocus,app.modocus.preview,app.modocus.development"
-ALLOWED_PRODUCT_IDS = "app.modocus.ai.monthly,app.modocus.ai.yearly"
+ALLOWED_PRODUCT_IDS = "app.modocus.ai.monthly"
 ALLOW_SANDBOX = "true"
 # AI Gateway name in this account (Dashboard → AI → AI Gateway).
 # Third-party models (openai/…, anthropic/…) bill via Unified Billing credits.
@@ -22,6 +22,14 @@ AI_GATEWAY_ID = "modocus"
 binding = "USAGE"
 id = "57dbbb779a7e412eb5398b2a5cbd6174"
 
+[[durable_objects.bindings]]
+name = "USAGE_LEDGER"
+class_name = "UsageLedger"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["UsageLedger"]
+
 [[routes]]
 pattern = "ai.modocus.app/*"
 zone_name = "modocus.app"
@@ -29,9 +37,13 @@ zone_name = "modocus.app"
 # Secrets:
 #   DASHBOARD_TOKEN     — operator dashboard (≥16 chars) on prod + staging
 #   DEV_BYPASS_TOKEN    — staging only
+#   SUBJECT_HASH_SALT   — random secret (≥16 chars), distinct per environment
 #   OPENAI_API_KEY / OPENROUTER_API_KEY — only if ALLOW_LEGACY_HTTP_UPSTREAM=true
 # Vars:
 #   AI_GATEWAY_ID — gateway name for third-party models (Unified Billing)
+# App Store Server Notifications V2:
+#   production https://ai.modocus.app/apple/notifications
+#   sandbox    https://ai-staging.modocus.app/apple/notifications
 
 # ── staging ────────────────────────────────────────────────────────────────
 [env.staging]
@@ -46,12 +58,20 @@ binding = "AI"
 [env.staging.vars]
 ENVIRONMENT = "staging"
 ALLOWED_BUNDLE_IDS = "app.modocus,app.modocus.preview,app.modocus.development"
-ALLOWED_PRODUCT_IDS = "app.modocus.ai.monthly,app.modocus.ai.yearly"
+ALLOWED_PRODUCT_IDS = "app.modocus.ai.monthly"
 ALLOW_SANDBOX = "true"
 AI_GATEWAY_ID = "modocus"
 
 [[env.staging.kv_namespaces]]
 binding = "USAGE"
 id = "57dbbb779a7e412eb5398b2a5cbd6174"
+
+[[env.staging.durable_objects.bindings]]
+name = "USAGE_LEDGER"
+class_name = "UsageLedger"
+
+[[env.staging.migrations]]
+tag = "v1"
+new_sqlite_classes = ["UsageLedger"]
 
 # Secrets (staging only): DEV_BYPASS_TOKEN

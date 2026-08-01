@@ -61,6 +61,7 @@ curl -sS -X POST https://ai-staging.modocus.app/v1/chat/completions \
   -H "authorization: Bearer $DEV_BYPASS_TOKEN" \
   -H 'content-type: application/json' \
   -H 'X-Modocus-Scene: chat' \
+  -H "X-Modocus-Operation-Id: smoke_$(date +%s)_0000000000" \
   -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"hi"}],"max_tokens":32}'
 ```
 
@@ -159,17 +160,43 @@ printf '%s' "$DASHBOARD_TOKEN" | npx wrangler secret put DASHBOARD_TOKEN --env s
 
 # Staging dogfood（仅 staging）
 printf '%s' "$DEV_BYPASS_TOKEN" | npx wrangler secret put DEV_BYPASS_TOKEN --env staging
+
+# 匿名订阅主体哈希盐（两环境分别生成，至少 16 字符）
+openssl rand -hex 32 | npx wrangler secret put SUBJECT_HASH_SALT
+openssl rand -hex 32 | npx wrangler secret put SUBJECT_HASH_SALT --env staging
 ```
 
 **一般不需要** `OPENAI_API_KEY` / `OPENROUTER_API_KEY`。  
 仅当 `ALLOW_LEGACY_HTTP_UPSTREAM=true` 时才启用直连 HTTP（多账单逃生口）。
 
-可选：`DAILY_LIMIT`（默认 80）。
+额度由 `USAGE_LEDGER` Durable Object 原子维护：每个 StoreKit 订阅周期
+300 个唯一用户操作。同一 `X-Modocus-Operation-Id` 的工具轮次与重试不会重复扣次；
+不支持通过环境变量增加隐藏的每日限额。
+
+成本边界：客户端声明的 model 永远只用于识别 slot，不能绕过 Dashboard 的模型配置；
+聊天 JSON 上限 160,000 字符，单次输出上限 4,096 tokens。两项均覆盖当前 App 的
+最大会议整理与工具调用负载，属于单次请求技术边界，不改变 300 次公开额度。
 
 ```bash
 curl -sS https://ai-staging.modocus.app/health | jq .upstream
 # { "workersAi": true, "aiGateway": true, "gatewayId": "modocus", ... }
 ```
+
+### 4.3 App Store Server Notifications V2
+
+在 App Store Connect → App Information → App Store Server Notifications 配置：
+
+| ASC 环境 | URL |
+|----------|-----|
+| Production | `https://ai.modocus.app/apple/notifications` |
+| Sandbox | `https://ai-staging.modocus.app/apple/notifications` |
+
+- 版本必须选 **Version 2**。
+- 两个环境分别点 **Send Test Notification**，期望 HTTP 200。
+- Endpoint 同时验证外层通知 JWS 与内层交易 JWS；错误 bundle、product 或 environment 不写状态。
+- `REFUND` / `REVOKE` 记录退款交易；`REFUND_REVERSED` 只清除对应交易。新续订使用新的 transaction ID，不会被旧退款阻断。
+- Durable Object 只保存加盐匿名主体和 transaction hash。额度周期切换只清用量键，不清退款状态。
+- 通知处理返回非 2xx 时 Apple 会重试；连续失败先查 Worker deployment logs、`USAGE_LEDGER` binding 和 `SUBJECT_HASH_SALT`。
 
 ---
 
@@ -220,7 +247,11 @@ Dashboard 改回上一组模型并 Save；或 `PUT /dashboard/api/models` 写回
 |------|----------|
 | App `401` / API key rejected | 生产包打到了 staging URL 却无 JWS；或 bypass 未进 bundle；或 production 误用 bypass |
 | `503` upstream_not_configured | slot 指向 OpenAI/OpenRouter 但该环境没 secret |
-| `429` usage_paused | 日限额；调 `DAILY_LIMIT` 或等 UTC 日切 |
+| `429` quota_exhausted | 当前订阅周期 300 次已用完；响应含 `periodEnd`，等待重置或改用 BYOK |
+| `500` quota_unavailable | `USAGE_LEDGER` Durable Object 未绑定或暂时不可用；检查 Wrangler 绑定与迁移 |
+| `403` server_configuration | production 缺少 `SUBJECT_HASH_SALT`；配置 secret 后重试 |
+| `403` revoked | 当前 JWS 对应交易已由 Apple 通知撤销；退款反转或新续订后恢复 |
+| Apple Test Notification 非 200 | 检查 URL 是否为 `/apple/notifications`、Version 2、环境与 bundle 白名单、DO binding |
 | 改了模型不生效 | 等 ~15s；或改错了环境的 dashboard |
 | workers.dev 超时、自定义域正常 | 本地网络拦 `*.workers.dev`，用 `ai-staging.modocus.app` / `ai.modocus.app` |
 
@@ -230,7 +261,7 @@ Dashboard 改回上一组模型并 Save；或 `PUT /dashboard/api/models` 写回
 
 | 仓 | 职责 |
 |----|------|
-| **modocus-proxy**（本仓） | Worker 代码、部署、密钥、模型路由、日限、JWS 校验 |
+| **modocus-proxy**（本仓） | Worker 代码、部署、密钥、模型路由、周期额度、JWS 校验、退款通知状态 |
 | **ios-sensors** | `EXPO_PUBLIC_AI_PROXY_URL`、场景 header、订阅 token、UI |
 
 App **不包含** proxy 源码。改转发逻辑只动本仓；改「连哪台 proxy / dogfood」只动 app 的 env 与文档：  

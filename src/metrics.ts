@@ -15,6 +15,11 @@ export type DayAgg = {
   err5xx: number;
   byModel: Record<string, number>;
   byAuth: { jws: number; bypass: number; none: number };
+  operations: number;
+  inputTokens: number;
+  outputTokens: number;
+  audioSeconds: number;
+  bySubject: Record<string, SubjectAgg>;
   latencyMsSum: number;
   latencyMsCount: number;
 };
@@ -27,15 +32,32 @@ export type MetricEvent = {
   auth?: string;
   /** Truncated subject id only (e.g. tx:abcd… / bypass:…). */
   subject?: string;
+  operation?: string;
+  scene?: string;
+  countedOperation?: boolean;
+  inputTokens?: number;
+  outputTokens?: number;
+  audioSeconds?: number;
+  quotaUsed?: number;
+  quotaLimit?: number;
+  periodEndMs?: number;
   ms?: number;
   note?: string;
 };
 
 export type SubjectUsage = {
   subject: string;
-  n: number;
+  requests: number;
+  operations: number;
+  inputTokens: number;
+  outputTokens: number;
+  audioSeconds: number;
+  used: number;
   limit: number;
+  periodEndMs?: number;
 };
+
+export type SubjectAgg = Omit<SubjectUsage, 'subject'>;
 
 const TTL_SEC = 60 * 60 * 24 * 14; // 14 days
 const EVENTS_KEY = 'm:events';
@@ -43,7 +65,6 @@ const MAX_EVENTS = 40;
 
 const memAgg = new Map<string, DayAgg>();
 const memEvents: MetricEvent[] = [];
-const memSubjects = new Map<string, number>();
 
 export function utcDay(d = new Date()): string {
   return d.toISOString().slice(0, 10);
@@ -62,6 +83,11 @@ function emptyAgg(day: string): DayAgg {
     err5xx: 0,
     byModel: {},
     byAuth: { jws: 0, bypass: 0, none: 0 },
+    operations: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    audioSeconds: 0,
+    bySubject: {},
     latencyMsSum: 0,
     latencyMsCount: 0,
   };
@@ -108,6 +134,15 @@ export type RecordMetricInput = {
   model?: string;
   authKind?: 'jws' | 'dev_bypass' | 'none';
   subject?: string;
+  operationHash?: string;
+  scene?: string;
+  countedOperation?: boolean;
+  inputTokens?: number;
+  outputTokens?: number;
+  audioSeconds?: number;
+  quotaUsed?: number;
+  quotaLimit?: number;
+  periodEndMs?: number;
   ms?: number;
   note?: string;
 };
@@ -149,6 +184,37 @@ export async function recordMetric(
       agg.byModel[m] = (agg.byModel[m] ?? 0) + 1;
     }
 
+    const inputTokens = finiteNonNegative(input.inputTokens);
+    const outputTokens = finiteNonNegative(input.outputTokens);
+    const audioSeconds = finiteNonNegative(input.audioSeconds);
+    agg.inputTokens += inputTokens;
+    agg.outputTokens += outputTokens;
+    agg.audioSeconds += audioSeconds;
+    if (input.countedOperation)
+      agg.operations += 1;
+
+    const subject = shortSubject(input.subject);
+    if (subject) {
+      const current = agg.bySubject[subject] ?? {
+        requests: 0,
+        operations: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        audioSeconds: 0,
+        used: 0,
+        limit: input.quotaLimit ?? 300,
+      };
+      current.requests += 1;
+      current.operations += input.countedOperation ? 1 : 0;
+      current.inputTokens += inputTokens;
+      current.outputTokens += outputTokens;
+      current.audioSeconds += audioSeconds;
+      current.used = Math.max(current.used, finiteNonNegative(input.quotaUsed));
+      current.limit = finitePositive(input.quotaLimit) || current.limit;
+      current.periodEndMs = input.periodEndMs ?? current.periodEndMs;
+      agg.bySubject[subject] = current;
+    }
+
     if (typeof input.ms === 'number' && Number.isFinite(input.ms)) {
       agg.latencyMsSum += input.ms;
       agg.latencyMsCount += 1;
@@ -166,11 +232,28 @@ export async function recordMetric(
       model: input.model,
       auth: input.authKind,
       subject: shortSubject(input.subject),
+      operation: input.operationHash,
+      scene: input.scene,
+      countedOperation: input.countedOperation,
+      inputTokens: finiteNonNegative(input.inputTokens) || undefined,
+      outputTokens: finiteNonNegative(input.outputTokens) || undefined,
+      audioSeconds: finiteNonNegative(input.audioSeconds) || undefined,
+      quotaUsed: input.quotaUsed,
+      quotaLimit: input.quotaLimit,
+      periodEndMs: input.periodEndMs,
       ms: input.ms,
       note: input.note,
     };
     await pushEvent(kv, ev);
   }
+}
+
+function finiteNonNegative(value: number | undefined): number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : 0;
+}
+
+function finitePositive(value: number | undefined): number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : 0;
 }
 
 async function pushEvent(kv: KVNamespace | undefined, ev: MetricEvent): Promise<void> {
@@ -207,45 +290,11 @@ export async function loadEvents(kv: KVNamespace | undefined): Promise<MetricEve
   }
 }
 
-/** Per-subject daily counters written by bumpUsage (`u:day:subject`). */
-export async function listSubjectUsage(
-  kv: KVNamespace | undefined,
-  day: string,
-  limit: number,
-): Promise<SubjectUsage[]> {
-  const dailyLimit = limit;
-  if (!kv) {
-    const out: SubjectUsage[] = [];
-    for (const [k, n] of memSubjects) {
-      if (k.startsWith(`u:${day}:`))
-        out.push({ subject: shortSubject(k.slice(`u:${day}:`.length)) ?? k, n, limit: dailyLimit });
-    }
-    return out.sort((a, b) => b.n - a.n).slice(0, 50);
-  }
-
-  const out: SubjectUsage[] = [];
-  let cursor: string | undefined;
-  do {
-    const page = await kv.list({ prefix: `u:${day}:`, cursor, limit: 100 });
-    for (const key of page.keys) {
-      const raw = await kv.get(key.name);
-      const n = raw ? Number(raw) : 0;
-      const subject = key.name.slice(`u:${day}:`.length);
-      out.push({
-        subject: shortSubject(subject) ?? subject,
-        n: Number.isFinite(n) ? n : 0,
-        limit: dailyLimit,
-      });
-    }
-    cursor = page.list_complete ? undefined : page.cursor;
-  } while (cursor);
-
-  return out.sort((a, b) => b.n - a.n).slice(0, 50);
-}
-
-/** Track subject counter in memory fallback (tests / no KV). */
-export function memNoteSubject(day: string, subject: string, n: number): void {
-  memSubjects.set(`u:${day}:${subject}`, n);
+export function listSubjectUsage(agg: DayAgg): SubjectUsage[] {
+  return Object.entries(agg.bySubject ?? {})
+    .map(([subject, usage]) => ({ subject, ...usage }))
+    .sort((a, b) => b.used - a.used || b.requests - a.requests)
+    .slice(0, 50);
 }
 
 export async function loadHistory(

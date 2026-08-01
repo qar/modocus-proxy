@@ -111,13 +111,13 @@ export function isSafeModelId(id: string): boolean {
 
 /** Built-in defaults (used when KV empty / invalid). */
 export const DEFAULT_SLOT_MODELS: Readonly<Record<ModelSlot, string>> = {
-  default: '@cf/openai/gpt-oss-120b',
-  parse: '@cf/openai/gpt-oss-120b',
-  plan: '@cf/openai/gpt-oss-120b',
-  estimate: '@cf/openai/gpt-oss-120b',
-  chat: '@cf/openai/gpt-oss-120b',
-  insight: '@cf/openai/gpt-oss-120b',
-  strong: '@cf/openai/gpt-oss-120b',
+  default: 'openai/gpt-4o-mini',
+  parse: 'openai/gpt-4.1-nano',
+  plan: 'openai/gpt-4.1-nano',
+  estimate: 'openai/gpt-4.1-nano',
+  chat: 'openai/gpt-4o-mini',
+  insight: 'openai/gpt-4o-mini',
+  strong: 'openai/gpt-4o-mini',
   stt: '@cf/openai/whisper-large-v3-turbo',
 };
 
@@ -323,49 +323,20 @@ export function modelForSlot(
   return DEFAULT_SLOT_MODELS[slot];
 }
 
-/**
- * Resolve the model id for a chat completion (any upstream).
- * Explicit client `@cf/…` or other safe ids without a scene still pass through
- * for ops/debug; with a scene, the operator slot map wins.
- */
+/** Resolve every client request through an operator-controlled model slot. */
 export function resolveChatModel(
   requested: unknown,
   config: ModelRoutingConfig = defaultRoutingConfig(),
   ctx: Omit<ResolveContext, 'requestedModel'> = {},
 ): string {
   const slot = resolveChatSlot({ ...ctx, requestedModel: requested });
-
-  // Pass-through debug ids when no scene routing applies.
-  if (typeof requested === 'string' && requested.trim() && !ctx.scene) {
-    const m = requested.trim();
-    const inSlugTable = m in SLUG_TO_SLOT || m.toLowerCase() in SLUG_TO_SLOT;
-    if (!inSlugTable && isSafeModelId(m) && !CHAT_OPTION_IDS.has(m)) {
-      // Unknown custom / @cf id without scene → honor client (ops/debug).
-      if (m.startsWith('@cf/') || m.includes('/'))
-        return m;
-    }
-  }
-
   return modelForSlot(config, slot);
 }
 
 export function resolveSttModel(
-  requested: unknown,
+  _requested: unknown,
   config: ModelRoutingConfig = defaultRoutingConfig(),
 ): string {
-  if (typeof requested === 'string' && requested.trim()) {
-    const m = requested.trim();
-    // Legacy OpenAI STT slugs → stt slot
-    if (
-      m === 'openai/whisper-1'
-      || m === 'whisper-1'
-      || m === 'openai/gpt-4o-transcribe'
-    ) {
-      return modelForSlot(config, 'stt');
-    }
-    if (m.startsWith('@cf/') && !STT_OPTION_IDS.has(m) && m !== DEFAULT_STT_MODEL)
-      return m;
-  }
   return modelForSlot(config, 'stt');
 }
 

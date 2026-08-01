@@ -19,14 +19,17 @@ export type AuthEnv = {
   DEV_BYPASS_TOKEN?: string;
   ALLOWED_BUNDLE_IDS?: string;
   ALLOWED_PRODUCT_IDS?: string;
+  SUBJECT_HASH_SALT?: string;
   /** "true" | "false" — default true (TestFlight). */
   ALLOW_SANDBOX?: string;
 };
 
 export type AuthSuccess = {
   ok: true;
-  /** Stable id for usage counters (never the raw bearer). */
+  /** Salted hash used for quota and metrics; never a raw transaction id. */
   subject: string;
+  periodStartMs: number;
+  periodEndMs: number;
   kind: 'jws' | 'dev_bypass';
   transaction?: VerifiedAppleTransaction;
 };
@@ -40,21 +43,27 @@ export type AuthFailure = {
 
 export type AuthResult = AuthSuccess | AuthFailure;
 
-const DEFAULT_BUNDLES = [
+export const DEFAULT_BUNDLES = [
   'app.modocus',
   'app.modocus.preview',
   'app.modocus.development',
 ] as const;
 
-const DEFAULT_PRODUCTS = [
+export const DEFAULT_PRODUCTS = [
   'app.modocus.ai.monthly',
-  'app.modocus.ai.yearly',
 ] as const;
 
-function parseList(raw: string | undefined, fallback: readonly string[]): string[] {
+export function parseConfiguredList(raw: string | undefined, fallback: readonly string[]): string[] {
   if (!raw || raw.trim() === '')
     return [...fallback];
   return raw.split(',').map(s => s.trim()).filter(Boolean);
+}
+
+export async function subscriptionSubject(
+  originalTransactionId: string,
+  salt: string,
+): Promise<string> {
+  return `sub:${await sha256Hex(`${salt}:${originalTransactionId}`)}`;
 }
 
 export function isStaging(env: AuthEnv): boolean {
@@ -81,9 +90,14 @@ export async function authenticateBearer(
   // Staging-only dogfood bypass — exact match, constant-time-ish compare.
   if (isStaging(env) && env.DEV_BYPASS_TOKEN && env.DEV_BYPASS_TOKEN.length >= 16) {
     if (timingSafeEqual(token, env.DEV_BYPASS_TOKEN)) {
+      const now = new Date();
+      const periodStartMs = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1);
+      const periodEndMs = Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1);
       return {
         ok: true,
-        subject: `bypass:${await shortHash(token)}`,
+        subject: `bypass:${await sha256Hex(`${env.SUBJECT_HASH_SALT ?? 'staging'}:${token}`)}`,
+        periodStartMs,
+        periodEndMs,
         kind: 'dev_bypass',
       };
     }
@@ -101,20 +115,30 @@ export async function authenticateBearer(
 
   try {
     const tx = await verifyAppleTransactionJws(token, {
-      allowedBundleIds: parseList(env.ALLOWED_BUNDLE_IDS, DEFAULT_BUNDLES),
-      allowedProductIds: parseList(env.ALLOWED_PRODUCT_IDS, DEFAULT_PRODUCTS),
+      allowedBundleIds: parseConfiguredList(env.ALLOWED_BUNDLE_IDS, DEFAULT_BUNDLES),
+      allowedProductIds: parseConfiguredList(env.ALLOWED_PRODUCT_IDS, DEFAULT_PRODUCTS),
       allowSandbox: env.ALLOW_SANDBOX !== 'false',
     });
+    if (!env.SUBJECT_HASH_SALT || env.SUBJECT_HASH_SALT.length < 16) {
+      return {
+        ok: false,
+        status: 403,
+        code: 'server_configuration',
+        message: 'subject_hash_salt_missing',
+      };
+    }
     return {
       ok: true,
-      subject: `tx:${tx.originalTransactionId}`,
+      subject: await subscriptionSubject(tx.originalTransactionId, env.SUBJECT_HASH_SALT),
+      periodStartMs: tx.purchaseDate,
+      periodEndMs: tx.expiresDate,
       kind: 'jws',
       transaction: tx,
     };
   }
   catch (err) {
     if (err instanceof JwsVerifyError) {
-      const status = err.code === 'expired' || err.code === 'wrong_product' || err.code === 'wrong_bundle'
+      const status = err.code === 'expired' || err.code === 'revoked' || err.code === 'wrong_product' || err.code === 'wrong_bundle'
         ? 403
         : 401;
       return {
@@ -142,8 +166,8 @@ function timingSafeEqual(a: string, b: string): boolean {
   return out === 0;
 }
 
-async function shortHash(s: string): Promise<string> {
+async function sha256Hex(s: string): Promise<string> {
   const data = new TextEncoder().encode(s);
   const digest = await crypto.subtle.digest('SHA-256', data);
-  return [...new Uint8Array(digest)].map(b => b.toString(16).padStart(2, '0')).join('').slice(0, 16);
+  return [...new Uint8Array(digest)].map(b => b.toString(16).padStart(2, '0')).join('');
 }

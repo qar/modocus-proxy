@@ -41,6 +41,11 @@ export type ProxyHandlerEnv = UpstreamEnv & {
   ENVIRONMENT?: string;
 };
 
+/** Public API cost/abuse bounds; all current app prompts fit inside these. */
+export const MAX_CHAT_REQUEST_CHARS = 160_000;
+export const MAX_CHAT_OUTPUT_TOKENS = 4_096;
+const DEFAULT_CHAT_OUTPUT_TOKENS = 1_200;
+
 function asRecord(v: unknown): Record<string, unknown> | null {
   if (v != null && typeof v === 'object' && !Array.isArray(v))
     return v as Record<string, unknown>;
@@ -56,7 +61,35 @@ function openaiError(status: number, message: string, code = 'upstream'): Respon
   });
 }
 
-function openaiChatCompletion(model: string, content: string, toolCalls?: unknown[]): Response {
+function extractUsage(result: unknown): {
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+} {
+  let record = asRecord(result);
+  if (record && asRecord(record.result))
+    record = asRecord(record.result);
+  const usage = record ? asRecord(record.usage) : null;
+  const prompt = usage?.prompt_tokens ?? usage?.input_tokens;
+  const completion = usage?.completion_tokens ?? usage?.output_tokens;
+  const promptTokens = typeof prompt === 'number' && Number.isFinite(prompt) ? prompt : 0;
+  const completionTokens = typeof completion === 'number' && Number.isFinite(completion) ? completion : 0;
+  const total = usage?.total_tokens;
+  return {
+    prompt_tokens: promptTokens,
+    completion_tokens: completionTokens,
+    total_tokens: typeof total === 'number' && Number.isFinite(total)
+      ? total
+      : promptTokens + completionTokens,
+  };
+}
+
+function openaiChatCompletion(
+  model: string,
+  content: string,
+  toolCalls?: unknown[],
+  usage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+): Response {
   const message: Record<string, unknown> = {
     role: 'assistant',
     content: content || null,
@@ -74,11 +107,7 @@ function openaiChatCompletion(model: string, content: string, toolCalls?: unknow
       message,
       finish_reason: toolCalls && toolCalls.length > 0 ? 'tool_calls' : 'stop',
     }],
-    usage: {
-      prompt_tokens: 0,
-      completion_tokens: 0,
-      total_tokens: 0,
-    },
+    usage,
   };
   return new Response(JSON.stringify(body), {
     status: 200,
@@ -176,6 +205,12 @@ function buildChatInputs(
   return inputs;
 }
 
+function boundedOutputTokens(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value))
+    return DEFAULT_CHAT_OUTPUT_TOKENS;
+  return Math.max(1, Math.min(MAX_CHAT_OUTPUT_TOKENS, Math.floor(value)));
+}
+
 /**
  * Gateway options for AI.run. Default **collectLog: false** — AI Gateway
  * otherwise stores full prompts/completions (todo titles, chat history) in the
@@ -208,9 +243,10 @@ async function runAiChat(
       : await ai.run(model, inputs);
     const text = extractText(result);
     const toolCalls = extractToolCalls(result);
+    const usage = extractUsage(result);
     if (!text && !(toolCalls && toolCalls.length > 0))
-      return openaiChatCompletion(model, text || '', toolCalls);
-    return openaiChatCompletion(model, text, toolCalls);
+      return openaiChatCompletion(model, text || '', toolCalls, usage);
+    return openaiChatCompletion(model, text, toolCalls, usage);
   }
   catch (err) {
     const msg = err instanceof Error ? err.message : 'ai_run_failed';
@@ -238,11 +274,19 @@ export async function handleChatCompletions(
 ): Promise<Response> {
   let body: Record<string, unknown>;
   try {
-    body = (await req.json()) as Record<string, unknown>;
+    const parsed = await req.json();
+    const record = asRecord(parsed);
+    if (!record)
+      return openaiError(400, 'invalid_body', 'bad_request');
+    body = record;
   }
   catch {
     return openaiError(400, 'invalid_json', 'bad_request');
   }
+
+  if (JSON.stringify(body).length > MAX_CHAT_REQUEST_CHARS)
+    return openaiError(413, 'request_too_large', 'request_too_large');
+  body.max_tokens = boundedOutputTokens(body.max_tokens);
 
   const env = upstreamEnv ?? {};
   const routing = config ?? await loadModelConfig(kv, environment);

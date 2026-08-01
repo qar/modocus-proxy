@@ -46,8 +46,9 @@ App 映射：`development` / `preview` → staging；`production` → production
 ## Model routing (per task type)
 
 Proxy resolves a **slot** from the request, then looks up the operator-chosen
-model for that slot (KV). Defaults are all `@cf/openai/gpt-oss-120b` until you
-change them on the dashboard.
+model for that slot (KV). User-facing slots default to `openai/gpt-4o-mini`;
+structured parse, plan, and estimate helpers default to `openai/gpt-4.1-nano`.
+Operators can change any slot on the dashboard.
 
 ### Upstreams
 
@@ -66,6 +67,11 @@ Create the gateway and load credits: CF Dashboard → **AI → AI Gateway**.
 
 Custom ids are allowed (safe charset). Dashboard dropdown lists common options
 plus **Custom model id…**.
+
+Client requests never select an upstream model directly: every request resolves
+through the operator-controlled slot map, even if a modified client supplies a
+different model id. Chat request JSON is capped at 160,000 characters and model
+output at 4,096 tokens, which covers current app workflows while bounding abuse.
 
 ### Slots
 
@@ -101,6 +107,7 @@ Product notes (app repo):
 |------|---------|------------|
 | `DASHBOARD_TOKEN` | ✅ | ✅ |
 | `DEV_BYPASS_TOKEN` | ✅ dogfood | ❌ ignored even if set |
+| `SUBJECT_HASH_SALT` | ✅ unique secret | ✅ unique secret |
 | `AI_GATEWAY_ID` var | ✅ (`modocus`) | ✅ |
 | Gateway Unified Billing credits | if using third-party models | same |
 | `OPENAI_API_KEY` / OpenRouter | only legacy HTTP mode | only legacy |
@@ -109,6 +116,8 @@ Product notes (app repo):
 printf '%s' "$(openssl rand -hex 24)" | npx wrangler secret put DASHBOARD_TOKEN
 printf '%s' "$DASHBOARD_TOKEN" | npx wrangler secret put DASHBOARD_TOKEN --env staging
 printf '%s' "$DEV_BYPASS_TOKEN" | npx wrangler secret put DEV_BYPASS_TOKEN --env staging
+openssl rand -hex 32 | npx wrangler secret put SUBJECT_HASH_SALT
+openssl rand -hex 32 | npx wrangler secret put SUBJECT_HASH_SALT --env staging
 ```
 
 ---
@@ -124,8 +133,22 @@ curl -sS -X POST https://ai-staging.modocus.app/v1/chat/completions \
   -H "authorization: Bearer $DEV_BYPASS_TOKEN" \
   -H 'content-type: application/json' \
   -H 'X-Modocus-Scene: chat' \
+  -H "X-Modocus-Operation-Id: smoke_$(date +%s)_0000000000" \
   -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"hi"}],"max_tokens":32}'
 ```
+
+### App Store Server Notifications V2
+
+Configure these URLs in App Store Connect and select **Version 2**:
+
+| ASC environment | URL |
+|-----------------|-----|
+| Production | `https://ai.modocus.app/apple/notifications` |
+| Sandbox | `https://ai-staging.modocus.app/apple/notifications` |
+
+The endpoint verifies both Apple's outer notification JWS and the nested transaction JWS. `REFUND` and `REVOKE` mark only that transaction as revoked; `REFUND_REVERSED` clears it. Stored state uses the salted anonymous subscription subject and a transaction hash, never a raw transaction ID. AI requests check this state before reserving quota.
+
+Use **Send Test Notification** for both URLs after every auth or routing deployment. A valid `TEST` notification returns HTTP 200 with `{"ok":true,"test":true}`.
 
 ---
 
