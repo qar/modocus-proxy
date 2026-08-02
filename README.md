@@ -58,11 +58,14 @@ Operators can change any slot on the dashboard.
 | `openai/…`, `anthropic/…`, `google/…`, bare `gpt-4o-mini` | AI Gateway (`env.AI.run` + `gateway.id`) | CF **Unified Billing** credits |
 | legacy HTTP | only if `ALLOW_LEGACY_HTTP_UPSTREAM=true` + provider keys | multi-bill |
 
-Requires var **`AI_GATEWAY_ID`** (`default` in `wrangler.toml`) for third-party models.
+Requires var **`AI_GATEWAY_ID`** for third-party models. Production uses
+`modocus-prod`; staging uses `modocus-staging`. Both gateways share the account's
+Unified Billing credits while keeping logs, limits, and provider configuration isolated.
 
 `@cf` stays on direct Workers AI by default (avoids some accounts' Gateway payment errors on Neurons).  
 **Privacy:** Gateway calls set `collectLog: false` by default so prompts/chat are **not** stored in
-the AI Gateway dashboard. Only set `GATEWAY_COLLECT_LOG=true` for short debug windows. Also turn
+the AI Gateway dashboard. Cloudflare may still retain metadata-only billing records (model, tokens,
+cost, status). Only set `GATEWAY_COLLECT_LOG=true` for short debug windows. Also turn
 **Logs off** under Gateway → Settings, and delete any existing log entries that contain user text.  
 Create the gateway and load credits: CF Dashboard → **AI → AI Gateway**.
 
@@ -109,7 +112,7 @@ Product notes (app repo):
 | `DASHBOARD_TOKEN` | ✅ | ✅ |
 | `DEV_BYPASS_TOKEN` | ✅ dogfood | ❌ ignored even if set |
 | `SUBJECT_HASH_SALT` | ✅ unique secret | ✅ unique secret |
-| `AI_GATEWAY_ID` var | ✅ (`default`) | ✅ (`default`) |
+| `AI_GATEWAY_ID` var | ✅ (`modocus-staging`) | ✅ (`modocus-prod`) |
 | Gateway Unified Billing credits | if using third-party models | same |
 | `OPENAI_API_KEY` / OpenRouter | only legacy HTTP mode | only legacy |
 
