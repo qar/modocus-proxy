@@ -58,7 +58,8 @@ Operators can change any slot on the dashboard.
 | `openai/…`, `anthropic/…`, `google/…`, bare `gpt-4o-mini` | AI Gateway (`env.AI.run` + `gateway.id`) | CF **Unified Billing** credits |
 | legacy HTTP | only if `ALLOW_LEGACY_HTTP_UPSTREAM=true` + provider keys | multi-bill |
 
-Requires var **`AI_GATEWAY_ID`** (default `modocus` in `wrangler.toml`) for third-party models.  
+Requires var **`AI_GATEWAY_ID`** (`default` in `wrangler.toml`) for third-party models.
+
 `@cf` stays on direct Workers AI by default (avoids some accounts' Gateway payment errors on Neurons).  
 **Privacy:** Gateway calls set `collectLog: false` by default so prompts/chat are **not** stored in
 the AI Gateway dashboard. Only set `GATEWAY_COLLECT_LOG=true` for short debug windows. Also turn
@@ -108,7 +109,7 @@ Product notes (app repo):
 | `DASHBOARD_TOKEN` | ✅ | ✅ |
 | `DEV_BYPASS_TOKEN` | ✅ dogfood | ❌ ignored even if set |
 | `SUBJECT_HASH_SALT` | ✅ unique secret | ✅ unique secret |
-| `AI_GATEWAY_ID` var | ✅ (`modocus`) | ✅ |
+| `AI_GATEWAY_ID` var | ✅ (`default`) | ✅ (`default`) |
 | Gateway Unified Billing credits | if using third-party models | same |
 | `OPENAI_API_KEY` / OpenRouter | only legacy HTTP mode | only legacy |
 

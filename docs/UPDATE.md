@@ -20,7 +20,7 @@ App 侧怎么连本服务：见 app 仓 `ios-sensors/docs/features/ai-proxy-env.
 | 模型路由 KV 键 | `cfg:model_slots:staging` | `cfg:model_slots:production` |
 | Dashboard | `https://ai-staging.modocus.app/dashboard` | `https://ai.modocus.app/dashboard` |
 | 上游 | `@cf/…` → Workers AI；`openai/…` `anthropic/…` → **AI Gateway** | 同左 |
-| Gateway | var `AI_GATEWAY_ID`（默认 `modocus`） | 同左 |
+| Gateway | var `AI_GATEWAY_ID`（`default`） | 同左 |
 
 > 两环境可共用同一 Cloudflare KV namespace，但 **模型路由按环境写不同 key**，互不覆盖。  
 > Usage 计数若共用 KV，dashboard 上的「今日请求」可能混看——以 `ENVIRONMENT` 与事件里的 auth 区分；需要严格隔离时可再拆 KV。
@@ -137,13 +137,13 @@ curl -sS -X PUT -H "Authorization: Bearer $DASHBOARD_TOKEN" \
 
 第三方模型（`openai/gpt-4o-mini`、`anthropic/…`、`google/…`）走 **AI Gateway Unified Billing**，**不需要**各家 API key。
 
-1. Cloudflare Dashboard → **AI → AI Gateway** → 创建 gateway，名称与 `AI_GATEWAY_ID` 一致（默认 **`modocus`**，见 `wrangler.toml`）。  
+1. `AI_GATEWAY_ID` 使用 **`default`**（见 `wrangler.toml`）；首次通过绑定调用时 Cloudflare 会在同一账户自动创建该 gateway。
 2. 同一页 **Unified Billing / Credits** → 充值 credits（有 credits 手续费；模型价按厂商 list price）。  
 3. Worker 已带 `[ai] binding = "AI"`；部署后 `/health` 应含 `"aiGateway": true`。
 
 ```bash
 # 改 gateway 名（可选）— 写在 wrangler.toml [vars] / [env.staging.vars]
-# AI_GATEWAY_ID = "modocus"
+# AI_GATEWAY_ID = "default"
 ```
 
 | 模型 id | 上游 | 账单 |
@@ -179,7 +179,7 @@ openssl rand -hex 32 | npx wrangler secret put SUBJECT_HASH_SALT --env staging
 
 ```bash
 curl -sS https://ai-staging.modocus.app/health | jq .upstream
-# { "workersAi": true, "aiGateway": true, "gatewayId": "modocus", ... }
+# { "workersAi": true, "aiGateway": true, "gatewayId": "default", ... }
 ```
 
 ### 4.3 App Store Server Notifications V2

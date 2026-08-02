@@ -13,9 +13,9 @@ ENVIRONMENT = "production"
 ALLOWED_BUNDLE_IDS = "app.modocus,app.modocus.preview,app.modocus.development"
 ALLOWED_PRODUCT_IDS = "app.modocus.ai.monthly"
 ALLOW_SANDBOX = "true"
-# AI Gateway name in this account (Dashboard → AI → AI Gateway).
+# Cloudflare's account-level default AI Gateway. The binding creates it on first use.
 # Third-party models (openai/…, anthropic/…) bill via Unified Billing credits.
-AI_GATEWAY_ID = "modocus"
+AI_GATEWAY_ID = "default"
 # Never set GATEWAY_COLLECT_LOG=true in production — stores full user prompts in CF logs.
 
 [[kv_namespaces]]
@@ -60,7 +60,7 @@ ENVIRONMENT = "staging"
 ALLOWED_BUNDLE_IDS = "app.modocus,app.modocus.preview,app.modocus.development"
 ALLOWED_PRODUCT_IDS = "app.modocus.ai.monthly"
 ALLOW_SANDBOX = "true"
-AI_GATEWAY_ID = "modocus"
+AI_GATEWAY_ID = "default"
 
 [[env.staging.kv_namespaces]]
 binding = "USAGE"
