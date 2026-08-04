@@ -1,4 +1,4 @@
-export const DEFAULT_OPERATION_LIMIT = 300;
+export const DEFAULT_OPERATION_LIMIT = 400;
 
 export type ReserveOperationInput = {
   operationId: string;

@@ -19,6 +19,7 @@ import {
   type DayAgg,
 } from './metrics';
 import { upstreamCapabilities } from './upstream';
+import { DEFAULT_OPERATION_LIMIT } from './usage-ledger';
 
 export type DashboardEnv = {
   DASHBOARD_TOKEN?: string;
@@ -251,7 +252,7 @@ export async function buildStatsPayload(env: DashboardEnv): Promise<Record<strin
     environment: (env.ENVIRONMENT ?? 'production').toLowerCase(),
     upstream: caps,
     day,
-    operationLimitPerPeriod: 300,
+    operationLimitPerPeriod: DEFAULT_OPERATION_LIMIT,
     today,
     history,
     subjects,

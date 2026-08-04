@@ -45,7 +45,7 @@ const PERIOD = {
 describe('operation quota ledger', () => {
   it('counts one operation id once across internal requests and retries', async () => {
     const storage = new MemoryLedgerStorage();
-    const input = { ...PERIOD, operationId: 'operation_0000000001', limit: 300 };
+    const input = { ...PERIOD, operationId: 'operation_0000000001', limit: 400 };
 
     const first = await reserveOperation(storage, input);
     const retry = await reserveOperation(storage, input);
@@ -54,7 +54,7 @@ describe('operation quota ledger', () => {
       allowed: true,
       counted: true,
       used: 1,
-      limit: 300,
+      limit: 400,
       periodEndMs: PERIOD.periodEndMs,
     });
     assert.deepEqual(retry, { ...first, counted: false });
@@ -74,19 +74,40 @@ describe('operation quota ledger', () => {
     assert.equal(retry.used, 2);
   });
 
-  it('atomically accepts exactly 300 concurrent unique operations', async () => {
+  it('atomically accepts exactly 400 concurrent unique operations', async () => {
     const storage = new MemoryLedgerStorage();
     const results = await Promise.all(
-      Array.from({ length: 301 }, (_, index) => reserveOperation(storage, {
+      Array.from({ length: 401 }, (_, index) => reserveOperation(storage, {
         ...PERIOD,
         operationId: `operation_${String(index).padStart(16, '0')}`,
-        limit: 300,
+        limit: 400,
       })),
     );
 
-    assert.equal(results.filter(result => result.allowed).length, 300);
+    assert.equal(results.filter(result => result.allowed).length, 400);
     assert.equal(results.filter(result => !result.allowed).length, 1);
-    assert.equal(Math.max(...results.map(result => result.used)), 300);
+    assert.equal(Math.max(...results.map(result => result.used)), 400);
+  });
+
+  it('allows operation 399 and 400, then rejects operation 401', async () => {
+    const storage = new MemoryLedgerStorage();
+    for (let index = 0; index < 398; index += 1) {
+      await reserveOperation(storage, {
+        ...PERIOD,
+        operationId: `operation_${String(index).padStart(16, '0')}`,
+      });
+    }
+
+    const op399 = await reserveOperation(storage, { ...PERIOD, operationId: 'operation_no_00000399' });
+    const op400 = await reserveOperation(storage, { ...PERIOD, operationId: 'operation_no_00000400' });
+    const op401 = await reserveOperation(storage, { ...PERIOD, operationId: 'operation_no_00000401' });
+
+    assert.deepEqual({ allowed: op399.allowed, used: op399.used }, { allowed: true, used: 399 });
+    assert.deepEqual({ allowed: op400.allowed, used: op400.used }, { allowed: true, used: 400 });
+    assert.deepEqual(
+      { allowed: op401.allowed, counted: op401.counted, used: op401.used },
+      { allowed: false, counted: false, used: 400 },
+    );
   });
 
   it('starts a fresh ledger when the StoreKit period changes', async () => {

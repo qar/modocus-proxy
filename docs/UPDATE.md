@@ -174,12 +174,12 @@ openssl rand -hex 32 | npx wrangler secret put SUBJECT_HASH_SALT --env staging
 仅当 `ALLOW_LEGACY_HTTP_UPSTREAM=true` 时才启用直连 HTTP（多账单逃生口）。
 
 额度由 `USAGE_LEDGER` Durable Object 原子维护：每个 StoreKit 订阅周期
-300 个唯一用户操作。同一 `X-Modocus-Operation-Id` 的工具轮次与重试不会重复扣次；
+400 个唯一用户操作。同一 `X-Modocus-Operation-Id` 的工具轮次与重试不会重复扣次；
 不支持通过环境变量增加隐藏的每日限额。
 
 成本边界：客户端声明的 model 永远只用于识别 slot，不能绕过 Dashboard 的模型配置；
 聊天 JSON 上限 160,000 字符，单次输出上限 4,096 tokens。两项均覆盖当前 App 的
-最大会议整理与工具调用负载，属于单次请求技术边界，不改变 300 次公开额度。
+最大会议整理与工具调用负载，属于单次请求技术边界，不改变 400 次公开额度。
 
 ```bash
 curl -sS https://ai-staging.modocus.app/health | jq .upstream
@@ -251,7 +251,7 @@ Dashboard 改回上一组模型并 Save；或 `PUT /dashboard/api/models` 写回
 |------|----------|
 | App `401` / API key rejected | 生产包打到了 staging URL 却无 JWS；或 bypass 未进 bundle；或 production 误用 bypass |
 | `503` upstream_not_configured | slot 指向 OpenAI/OpenRouter 但该环境没 secret |
-| `429` quota_exhausted | 当前订阅周期 300 次已用完；响应含 `periodEnd`，等待重置或改用 BYOK |
+| `429` quota_exhausted | 当前订阅周期 400 次已用完；响应含 `periodEnd`，等待重置或改用 BYOK |
 | `500` quota_unavailable | `USAGE_LEDGER` Durable Object 未绑定或暂时不可用；检查 Wrangler 绑定与迁移 |
 | `403` server_configuration | production 缺少 `SUBJECT_HASH_SALT`；配置 secret 后重试 |
 | `403` revoked | 当前 JWS 对应交易已由 Apple 通知撤销；退款反转或新续订后恢复 |

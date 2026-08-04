@@ -2,6 +2,7 @@
  * Aggregate usage metrics in KV for the operator dashboard.
  * Privacy: never store request/response bodies, raw tokens, or full JWS.
  */
+import { DEFAULT_OPERATION_LIMIT } from './usage-ledger';
 
 export type DayAgg = {
   day: string;
@@ -202,7 +203,7 @@ export async function recordMetric(
         outputTokens: 0,
         audioSeconds: 0,
         used: 0,
-        limit: input.quotaLimit ?? 300,
+        limit: input.quotaLimit ?? DEFAULT_OPERATION_LIMIT,
       };
       current.requests += 1;
       current.operations += input.countedOperation ? 1 : 0;
