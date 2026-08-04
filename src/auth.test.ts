@@ -85,3 +85,55 @@ describe('authenticateBearer staging', () => {
     assert.equal(r.ok, false);
   });
 });
+
+describe('free teaser bearer', () => {
+  const INSTALL = 'free.v1.7b7f1e3c-1234-4abc-9def-0123456789ab';
+
+  it('authenticates a free bearer with a month-window period', async () => {
+    const r = await authenticateBearer({
+      ENVIRONMENT: 'production',
+      SUBJECT_HASH_SALT: 'salt-that-is-long-enough',
+    }, INSTALL);
+    assert.equal(r.ok, true);
+    if (r.ok) {
+      assert.equal(r.kind, 'free');
+      assert.ok(r.subject.startsWith('free:'));
+      const start = new Date(r.periodStartMs);
+      const end = new Date(r.periodEndMs);
+      assert.equal(start.getUTCDate(), 1);
+      assert.equal(end.getUTCDate(), 1);
+      assert.ok(r.periodEndMs > r.periodStartMs);
+    }
+  });
+
+  it('rejects a free bearer in production without a subject salt', async () => {
+    const r = await authenticateBearer({ ENVIRONMENT: 'production' }, INSTALL);
+    assert.equal(r.ok, false);
+    if (!r.ok)
+      assert.equal(r.message, 'subject_hash_salt_missing');
+  });
+
+  it('accepts a free bearer in staging without a salt', async () => {
+    const r = await authenticateBearer({ ENVIRONMENT: 'staging' }, INSTALL);
+    assert.equal(r.ok, true);
+  });
+
+  it('rejects malformed free bearers', async () => {
+    const r = await authenticateBearer({
+      ENVIRONMENT: 'production',
+      SUBJECT_HASH_SALT: 'salt-that-is-long-enough',
+    }, 'free.v1.not-a-uuid');
+    assert.equal(r.ok, false);
+    if (!r.ok)
+      assert.equal(r.status, 401);
+  });
+
+  it('derives different subjects for different install ids', async () => {
+    const env = { ENVIRONMENT: 'staging' };
+    const a = await authenticateBearer(env, INSTALL);
+    const b = await authenticateBearer(env, 'free.v1.00000000-0000-4000-8000-000000000000');
+    assert.ok(a.ok && b.ok);
+    if (a.ok && b.ok)
+      assert.notEqual(a.subject, b.subject);
+  });
+});

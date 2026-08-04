@@ -110,6 +110,25 @@ describe('operation quota ledger', () => {
     );
   });
 
+  it('caps the free teaser at 5 ops and rejects the 6th', async () => {
+    const storage = new MemoryLedgerStorage();
+    const results = [];
+    for (let index = 0; index < 6; index += 1) {
+      results.push(await reserveOperation(storage, {
+        ...PERIOD,
+        operationId: `operation_free_000000${index}`,
+        limit: 5,
+      }));
+    }
+
+    assert.equal(results.filter(result => result.allowed).length, 5);
+    const sixth = results[5];
+    assert.deepEqual(
+      { allowed: sixth?.allowed, counted: sixth?.counted, used: sixth?.used },
+      { allowed: false, counted: false, used: 5 },
+    );
+  });
+
   it('starts a fresh ledger when the StoreKit period changes', async () => {
     const storage = new MemoryLedgerStorage();
     await reserveOperation(storage, {

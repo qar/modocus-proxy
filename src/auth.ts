@@ -30,7 +30,7 @@ export type AuthSuccess = {
   subject: string;
   periodStartMs: number;
   periodEndMs: number;
-  kind: 'jws' | 'dev_bypass';
+  kind: 'jws' | 'dev_bypass' | 'free';
   transaction?: VerifiedAppleTransaction;
 };
 
@@ -71,6 +71,27 @@ export function isStaging(env: AuthEnv): boolean {
 }
 
 /**
+ * Free-teaser bearer: `free.v1.<uuid>` where the uuid is a client-generated
+ * install id. Not a secret — the DeviceCheck bit and the tiny monthly limit
+ * are the abuse bound, not this credential (monetization.md §5).
+ */
+const FREE_BEARER_RE
+  = /^free\.v1\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export function looksLikeFreeBearer(token: string): boolean {
+  return FREE_BEARER_RE.test(token);
+}
+
+/** Current UTC calendar month window — the free teaser's quota period. */
+export function utcMonthPeriod(nowMs: number): { periodStartMs: number; periodEndMs: number } {
+  const now = new Date(nowMs);
+  return {
+    periodStartMs: Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1),
+    periodEndMs: Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1),
+  };
+}
+
+/**
  * Authenticate a Bearer credential.
  * Never logs the token.
  */
@@ -101,6 +122,27 @@ export async function authenticateBearer(
         kind: 'dev_bypass',
       };
     }
+  }
+
+  // Free voice teaser — anonymous install-scoped monthly quota.
+  if (looksLikeFreeBearer(token)) {
+    if (!isStaging(env) && (!env.SUBJECT_HASH_SALT || env.SUBJECT_HASH_SALT.length < 16)) {
+      return {
+        ok: false,
+        status: 403,
+        code: 'server_configuration',
+        message: 'subject_hash_salt_missing',
+      };
+    }
+    const installId = token.slice('free.v1.'.length).toLowerCase();
+    const { periodStartMs, periodEndMs } = utcMonthPeriod(Date.now());
+    return {
+      ok: true,
+      subject: `free:${await sha256Hex(`${env.SUBJECT_HASH_SALT ?? 'staging'}:${installId}`)}`,
+      periodStartMs,
+      periodEndMs,
+      kind: 'free',
+    };
   }
 
   // Production (and staging without bypass match): require Apple JWS.

@@ -1,5 +1,8 @@
 export const DEFAULT_OPERATION_LIMIT = 400;
 
+/** Free voice-teaser ops per device per UTC month (monetization.md §5). */
+export const FREE_TEASER_OPERATION_LIMIT = 5;
+
 export type ReserveOperationInput = {
   operationId: string;
   periodStartMs: number;

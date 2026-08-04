@@ -22,6 +22,11 @@ import {
 } from './app-store-notifications';
 import { handleDashboard } from './dashboard';
 import {
+  isSameUtcMonth,
+  markDeviceExhausted,
+  queryDeviceBits,
+} from './device-check';
+import {
   recordMetric,
 } from './metrics';
 import {
@@ -33,6 +38,7 @@ import { handleChatCompletions, handleTranscriptions, type AiBinding } from './w
 import { upstreamCapabilities } from './upstream';
 import {
   DEFAULT_OPERATION_LIMIT,
+  FREE_TEASER_OPERATION_LIMIT,
   isValidOperationId,
   type ReserveOperationResult,
 } from './usage-ledger';
@@ -64,6 +70,11 @@ export interface Env {
   ALLOWED_PRODUCT_IDS?: string;
   ALLOW_SANDBOX?: string;
   SUBJECT_HASH_SALT?: string;
+  /** Apple DeviceCheck credentials for the free voice teaser (optional). */
+  DEVICECHECK_KEY_P8?: string;
+  DEVICECHECK_KEY_ID?: string;
+  APPLE_TEAM_ID?: string;
+  DEVICECHECK_BASE_URL?: string;
 }
 
 function json(data: unknown, status = 200): Response {
@@ -90,6 +101,7 @@ async function reserveOperationQuota(
   operationId: string,
   periodStartMs: number,
   periodEndMs: number,
+  limit: number = DEFAULT_OPERATION_LIMIT,
 ): Promise<ReserveOperationResult | null> {
   if (!env.USAGE_LEDGER)
     return null;
@@ -102,7 +114,7 @@ async function reserveOperationQuota(
       operationId,
       periodStartMs,
       periodEndMs,
-      limit: DEFAULT_OPERATION_LIMIT,
+      limit,
     }),
   });
   if (!response.ok)
@@ -273,23 +285,65 @@ export default {
       }, 400);
     }
 
+    const scene = req.headers.get('x-modocus-scene')?.trim() || route;
+    const deviceToken = req.headers.get('x-modocus-device-token')?.trim() ?? '';
+
+    if (auth.kind === 'free') {
+      // Teaser scope: voice capture only — transcription plus the parse call
+      // of the same operation. Chat / insight / meeting stay subscriber-only.
+      const inScope = (route === 'stt' && scene === 'stt')
+        || (route === 'chat' && scene === 'parse');
+      if (!inScope) {
+        return json({
+          error: { message: 'free_tier_voice_only', code: 'auth' },
+        }, 403);
+      }
+      // DeviceCheck bit0 marks "exhausted this month" and survives reinstalls.
+      // No token / not configured / Apple down → fall through to the
+      // install-scoped ledger (abuse bound is cents, availability wins).
+      const bits = await queryDeviceBits(env, deviceToken);
+      if (bits?.bit0) {
+        if (isSameUtcMonth(bits.lastUpdated, Date.now())) {
+          return json({
+            error: {
+              message: 'quota_exhausted',
+              code: 'quota_exhausted',
+              used: FREE_TEASER_OPERATION_LIMIT,
+              limit: FREE_TEASER_OPERATION_LIMIT,
+              periodEnd: new Date(auth.periodEndMs).toISOString(),
+            },
+          }, 429);
+        }
+        // Stale exhausted marker from an earlier month — clear it.
+        await markDeviceExhausted(env, deviceToken, false);
+      }
+    }
+
     const usage = await reserveOperationQuota(
       env,
       auth.subject,
       operationId,
       auth.periodStartMs,
       auth.periodEndMs,
+      auth.kind === 'free' ? FREE_TEASER_OPERATION_LIMIT : DEFAULT_OPERATION_LIMIT,
     );
     if (!usage) {
       return json({ error: { message: 'quota_unavailable', code: 'server' } }, 500);
     }
+    if (
+      auth.kind === 'free'
+      && usage.counted
+      && usage.used >= usage.limit
+    ) {
+      // The last teaser op of the month — pin the reinstall-proof marker.
+      await markDeviceExhausted(env, deviceToken, true);
+    }
     const operationHash = await shortHash(operationId);
-    const scene = req.headers.get('x-modocus-scene')?.trim() || route;
     if (!usage.allowed) {
       await recordMetric(env.USAGE, {
         route,
         status: 429,
-        authKind: auth.kind === 'dev_bypass' ? 'dev_bypass' : 'jws',
+        authKind: auth.kind === 'jws' ? 'jws' : auth.kind === 'dev_bypass' ? 'dev_bypass' : 'none',
         subject: auth.subject,
         operationHash,
         scene,
@@ -310,7 +364,9 @@ export default {
       }, 429), usage);
     }
 
-    const authKind = auth.kind === 'dev_bypass' ? 'dev_bypass' as const : 'jws' as const;
+    const authKind = auth.kind === 'jws'
+      ? 'jws' as const
+      : auth.kind === 'dev_bypass' ? 'dev_bypass' as const : 'none' as const;
 
     if (route === 'chat') {
       const model = await peekModel(req, 'chat', env.USAGE, env.ENVIRONMENT);
