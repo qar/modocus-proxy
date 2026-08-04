@@ -2,9 +2,11 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import { normalizeRoutingConfig } from './models';
+import { syntheticM4a } from './test-audio';
 import {
   type AiBinding,
   handleChatCompletions,
+  handleTranscriptions,
   MAX_CHAT_OUTPUT_TOKENS,
   MAX_CHAT_REQUEST_CHARS,
 } from './workers-ai';
@@ -82,5 +84,38 @@ describe('chat model selection', () => {
 
     assert.equal(response.status, 200);
     assert.equal(calls[0]?.model, '@cf/meta/llama-3.2-3b-instruct');
+  });
+});
+
+describe('transcription duration cap', () => {
+  function sttRequest(bytes: Uint8Array, declaredSeconds: number): Request {
+    return new Request('https://ai.modocus.app/v1/audio/transcriptions', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-modocus-audio-seconds': String(declaredSeconds),
+      },
+      body: JSON.stringify({
+        input_audio: { data: Buffer.from(bytes).toString('base64'), format: 'm4a' },
+      }),
+    });
+  }
+
+  it('rejects a 92-second clip with audio_too_long before inference', async () => {
+    const { ai, calls } = recordingAi();
+    const response = await handleTranscriptions(ai, sttRequest(syntheticM4a(92), 92), ROUTING);
+
+    assert.equal(response.status, 413);
+    assert.equal(calls.length, 0);
+    const body = await response.json() as { error: { code: string } };
+    assert.equal(body.error.code, 'audio_too_long');
+  });
+
+  it('lets a 90-second clip through to inference', async () => {
+    const { ai, calls } = recordingAi();
+    const response = await handleTranscriptions(ai, sttRequest(syntheticM4a(90), 90), ROUTING);
+
+    assert.equal(response.status, 200);
+    assert.equal(calls.length, 1);
   });
 });

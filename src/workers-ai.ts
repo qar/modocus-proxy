@@ -5,6 +5,10 @@
  */
 
 import {
+  checkHostedAudioLimit,
+  MAX_HOSTED_AUDIO_SECONDS,
+} from './audio-limits';
+import {
   loadModelConfig,
   resolveChatModel,
   resolveSttModel,
@@ -402,6 +406,23 @@ export async function handleTranscriptions(
   const routing = config ?? await loadModelConfig(kv, environment);
   const model = resolveSttModel(modelReq, routing);
   const bytes = base64ToBytes(b64);
+
+  // Hosted takes are capped at 90 s (monetization.md §5) — the client stops
+  // recording there; this is the billing-side second check. BYOK traffic never
+  // reaches this proxy, so the cap only ever applies to hosted requests.
+  const declaredSeconds = Number(req.headers.get('x-modocus-audio-seconds'));
+  const limitCheck = checkHostedAudioLimit(
+    bytes,
+    Number.isFinite(declaredSeconds) && declaredSeconds >= 0 ? declaredSeconds : 0,
+  );
+  if (!limitCheck.ok) {
+    return openaiError(
+      413,
+      `audio exceeds the ${MAX_HOSTED_AUDIO_SECONDS}s hosted limit`,
+      'audio_too_long',
+    );
+  }
+
   const { provider, model: upstreamModel } = resolveUpstream(model, env);
   const isCf = upstreamModel.startsWith('@cf/');
 
