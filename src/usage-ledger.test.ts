@@ -110,22 +110,22 @@ describe('operation quota ledger', () => {
     );
   });
 
-  it('caps the free teaser at 5 ops and rejects the 6th', async () => {
+  it('caps the free teaser at 30 ops and rejects the 31st', async () => {
     const storage = new MemoryLedgerStorage();
     const results = [];
-    for (let index = 0; index < 6; index += 1) {
+    for (let index = 0; index < 31; index += 1) {
       results.push(await reserveOperation(storage, {
         ...PERIOD,
-        operationId: `operation_free_000000${index}`,
-        limit: 5,
+        operationId: `operation_free_000000${String(index).padStart(2, '0')}`,
+        limit: 30,
       }));
     }
 
-    assert.equal(results.filter(result => result.allowed).length, 5);
-    const sixth = results[5];
+    assert.equal(results.filter(result => result.allowed).length, 30);
+    const last = results[30];
     assert.deepEqual(
-      { allowed: sixth?.allowed, counted: sixth?.counted, used: sixth?.used },
-      { allowed: false, counted: false, used: 5 },
+      { allowed: last?.allowed, counted: last?.counted, used: last?.used },
+      { allowed: false, counted: false, used: 30 },
     );
   });
 

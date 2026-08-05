@@ -175,9 +175,10 @@ openssl rand -hex 32 | npx wrangler secret put SUBJECT_HASH_SALT --env staging
 
 额度由 `USAGE_LEDGER` Durable Object 原子维护：每个 StoreKit 订阅周期
 400 个唯一用户操作。免费语音体验（免订阅）：Bearer `free.v1.<installId>`，
-按 UTC 自然月每设备 5 次，仅允许 stt 路由的 `stt` scene 与 chat 路由的 `parse` scene；
+按 UTC 自然月每设备 30 次（语音/对话/洞察共用池），允许 stt 路由的 `stt` scene 与
+chat 路由的 `parse` / `chat` / `insight` scene；
 `X-Modocus-Device-Token`（DCDevice token）可选——配置了 `DEVICECHECK_KEY_P8` /
-`DEVICECHECK_KEY_ID` / `APPLE_TEAM_ID` 三个 secret 时，第 5 次用完会置 DeviceCheck
+`DEVICECHECK_KEY_ID` / `APPLE_TEAM_ID` 三个 secret 时，第 30 次用完会置 DeviceCheck
 bit0（重装不重置），新月份自动清位；未配置或 Apple 不可达时退化为仅按 installId 计数。同一 `X-Modocus-Operation-Id` 的工具轮次与重试不会重复扣次；
 不支持通过环境变量增加隐藏的每日限额。
 

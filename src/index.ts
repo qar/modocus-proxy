@@ -289,13 +289,16 @@ export default {
     const deviceToken = req.headers.get('x-modocus-device-token')?.trim() ?? '';
 
     if (auth.kind === 'free') {
-      // Teaser scope: voice capture only — transcription plus the parse call
-      // of the same operation. Chat / insight / meeting stay subscriber-only.
+      // Teaser scope: voice capture (transcription + the parse call of the
+      // same operation), Assistant chat, and task insight. Meeting import
+      // stays subscriber-only — its scene is also 'parse', which would pass
+      // here, but the app gates meeting at the route and never sends teaser
+      // credentials for it (accepted risk, worth cents at most).
       const inScope = (route === 'stt' && scene === 'stt')
-        || (route === 'chat' && scene === 'parse');
+        || (route === 'chat' && (scene === 'parse' || scene === 'chat' || scene === 'insight'));
       if (!inScope) {
         return json({
-          error: { message: 'free_tier_voice_only', code: 'auth' },
+          error: { message: 'free_tier_scope', code: 'auth' },
         }, 403);
       }
       // DeviceCheck bit0 marks "exhausted this month" and survives reinstalls.
