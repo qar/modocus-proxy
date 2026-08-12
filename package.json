@@ -9,7 +9,8 @@
     "typecheck": "tsc --noEmit",
     "test": "tsx --test src/*.test.ts",
     "deploy:prod": "wrangler deploy",
-    "deploy:staging": "wrangler deploy --env staging"
+    "deploy:staging": "wrangler deploy --env staging",
+    "smoke:prod-quota": "node scripts/smoke-production-quota.mjs"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20260101.0",

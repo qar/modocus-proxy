@@ -115,6 +115,9 @@ Product notes (app repo):
 | `AI_GATEWAY_ID` var | ✅ (`modocus-staging`) | ✅ (`modocus-prod`) |
 | Gateway Unified Billing credits | if using third-party models | same |
 | `OPENAI_API_KEY` / OpenRouter | only legacy HTTP mode | only legacy |
+| `DEVICECHECK_KEY_P8` | optional | ✅ for reinstall-proof free pool |
+| `DEVICECHECK_KEY_ID` | optional | ✅ Key ID from Apple |
+| `APPLE_TEAM_ID` | optional | ✅ 10-char Team ID |
 
 ```bash
 printf '%s' "$(openssl rand -hex 24)" | npx wrangler secret put DASHBOARD_TOKEN
@@ -124,6 +127,25 @@ openssl rand -hex 32 | npx wrangler secret put SUBJECT_HASH_SALT
 openssl rand -hex 32 | npx wrangler secret put SUBJECT_HASH_SALT --env staging
 ```
 
+### DeviceCheck (free teaser reinstall-proof)
+
+Create a key at [Certificates, Identifiers & Profiles → Keys](https://developer.apple.com/account/resources/authkeys/list) with **DeviceCheck** enabled. Download the `.p8` once.
+
+```bash
+# PEM may be multiline; printf preserves content.
+printf '%s' "$(cat AuthKey_XXXXXXXXXX.p8)" | npx wrangler secret put DEVICECHECK_KEY_P8
+printf '%s' 'XXXXXXXXXX' | npx wrangler secret put DEVICECHECK_KEY_ID
+printf '%s' 'TEAMIDXXXX' | npx wrangler secret put APPLE_TEAM_ID
+# optional staging copy
+printf '%s' "$(cat AuthKey_XXXXXXXXXX.p8)" | npx wrangler secret put DEVICECHECK_KEY_P8 --env staging
+printf '%s' 'XXXXXXXXXX' | npx wrangler secret put DEVICECHECK_KEY_ID --env staging
+printf '%s' 'TEAMIDXXXX' | npx wrangler secret put APPLE_TEAM_ID --env staging
+```
+
+`GET /health` → `deviceCheck.configured: true` after secrets are set (no redeploy required for secret-only updates).
+
+Without DeviceCheck, free teaser still enforces **30/UTC month** via the install-scoped ledger; only reinstall-reset protection is soft.
+
 ---
 
 ## Smoke
@@ -131,7 +153,10 @@ openssl rand -hex 32 | npx wrangler secret put SUBJECT_HASH_SALT --env staging
 ```bash
 curl -sS https://ai.modocus.app/health
 curl -sS https://ai-staging.modocus.app/health
-# {"ok":true,"env":"staging|production","upstream":{"workersAi":true,"openai":…,"openrouter":…}}
+# operationQuota.limit=400, freeTeaser.limit=30, deviceCheck.configured
+
+# Full free-pool 30/31 + idempotent operation-id (no model spend)
+pnpm smoke:prod-quota
 
 curl -sS -X POST https://ai-staging.modocus.app/v1/chat/completions \
   -H "authorization: Bearer $DEV_BYPASS_TOKEN" \

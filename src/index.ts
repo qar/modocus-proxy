@@ -218,6 +218,11 @@ export default {
 
     if (req.method === 'GET' && (path === '/health' || path === '/v1/health')) {
       const caps = upstreamCapabilities(env);
+      const deviceCheckConfigured = Boolean(
+        env.DEVICECHECK_KEY_P8?.trim()
+        && env.DEVICECHECK_KEY_ID?.trim()
+        && env.APPLE_TEAM_ID?.trim(),
+      );
       return json({
         ok: true,
         env: (env.ENVIRONMENT ?? 'production').toLowerCase(),
@@ -225,6 +230,19 @@ export default {
         operationQuota: {
           limit: DEFAULT_OPERATION_LIMIT,
           durableObjectBound: Boolean(env.USAGE_LEDGER),
+        },
+        /** Free teaser monthly pool (chat + insight + cloud STT). */
+        freeTeaser: {
+          limit: FREE_TEASER_OPERATION_LIMIT,
+          period: 'utc_month',
+        },
+        /**
+         * DeviceCheck bit0 backs reinstall-proof free-pool exhaustion.
+         * When false, install-scoped ledger still enforces the 30 cap
+         * (monetization.md §5 — availability over hard anti-fraud).
+         */
+        deviceCheck: {
+          configured: deviceCheckConfigured,
         },
         dashboard: Boolean(env.DASHBOARD_TOKEN && env.DASHBOARD_TOKEN.length >= 16),
       });
